@@ -43,6 +43,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
+            type=raw,value=sha-${{ github.sha }}
             type=raw,value=latest,enable=${{ github.ref_name == 'master' }}
 
       - name: Build and push image
