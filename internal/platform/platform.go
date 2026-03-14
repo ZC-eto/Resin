@@ -35,6 +35,8 @@ type Platform struct {
 
 	// Other config fields.
 	StickyTTLNs                      int64
+	RotationPolicy                   RotationPolicy
+	RotationIntervalNs               int64
 	ReverseProxyMissAction           string
 	ReverseProxyEmptyAccountBehavior string
 	ReverseProxyFixedAccountHeader   string

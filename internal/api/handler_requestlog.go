@@ -286,11 +286,17 @@ type logListItem struct {
 	PlatformID           string `json:"platform_id"`
 	PlatformName         string `json:"platform_name"`
 	Account              string `json:"account"`
+	AccessMode           string `json:"access_mode"`
+	LeaseAction          string `json:"lease_action"`
+	RotateRequested      bool   `json:"rotate_requested"`
+	RotateApplied        bool   `json:"rotate_applied"`
+	RotateSource         string `json:"rotate_source"`
 	TargetHost           string `json:"target_host"`
 	TargetURL            string `json:"target_url"`
 	NodeHash             string `json:"node_hash"`
 	NodeTag              string `json:"node_tag"`
 	EgressIP             string `json:"egress_ip"`
+	PreviousEgressIP     string `json:"previous_egress_ip"`
 	DurationMs           int64  `json:"duration_ms"`
 	NetOK                bool   `json:"net_ok"`
 	HTTPMethod           string `json:"http_method"`
@@ -322,11 +328,17 @@ func toLogListItem(s requestlog.LogSummary) logListItem {
 		PlatformID:           s.PlatformID,
 		PlatformName:         s.PlatformName,
 		Account:              s.Account,
+		AccessMode:           s.AccessMode,
+		LeaseAction:          s.LeaseAction,
+		RotateRequested:      s.RotateRequested,
+		RotateApplied:        s.RotateApplied,
+		RotateSource:         s.RotateSource,
 		TargetHost:           s.TargetHost,
 		TargetURL:            s.TargetURL,
 		NodeHash:             s.NodeHash,
 		NodeTag:              s.NodeTag,
 		EgressIP:             s.EgressIP,
+		PreviousEgressIP:     s.PreviousEgressIP,
 		DurationMs:           s.DurationNs / 1e6,
 		NetOK:                s.NetOK,
 		HTTPMethod:           s.HTTPMethod,

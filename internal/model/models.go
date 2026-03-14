@@ -8,6 +8,9 @@ type Platform struct {
 	ID                               string `json:"id"`
 	Name                             string `json:"name"`
 	StickyTTLNs                      int64  `json:"sticky_ttl_ns"`
+	ProxyAccessMode                  string `json:"proxy_access_mode"`
+	RotationPolicy                   string `json:"rotation_policy"`
+	RotationIntervalNs               int64  `json:"rotation_interval_ns"`
 	RegexFilters                     []string
 	RegionFilters                    []string
 	ReverseProxyMissAction           string `json:"reverse_proxy_miss_action"`

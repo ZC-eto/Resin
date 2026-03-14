@@ -230,3 +230,21 @@ func TestInboundMux_RoutesTokenInheritLeaseAction(t *testing.T) {
 		t.Fatalf("expected token-action route, got %q", rec.Header().Get("X-Route"))
 	}
 }
+
+func TestInboundMux_RoutesTokenRotateLeaseAction(t *testing.T) {
+	mux := newInboundMux(
+		"tok",
+		tagHandler("forward", http.StatusOK),
+		tagHandler("reverse", http.StatusOK),
+		tagHandler("api", http.StatusOK),
+		tagHandler("token-action", http.StatusOK),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/tok/api/v1/Default/actions/rotate-lease", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-Route") != "token-action" {
+		t.Fatalf("expected token-action route, got %q", rec.Header().Get("X-Route"))
+	}
+}

@@ -126,6 +126,17 @@ curl -x http://127.0.0.1:2260 \
   https://api.ipify.org
 ```
 
+Many browsers and HTTP clients also support the standard proxy URL form `http://user:pass@host:port`.
+With Resin, this is just another way to send the same Basic auth credentials:
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  https://api.ipify.org
+```
+
+> [!WARNING]
+> `http://user:pass@host:port` is convenient, but it is **not encrypted by itself** over plain HTTP transport. If Resin is reachable over an untrusted network, place it behind a trusted private network, TLS terminator, SSH tunnel, or another secure transport layer.
+
 If your client supports overriding `BASE_URL`, you can also use reverse-proxy mode.
 URL format: `/token/Platform(optional).Account(optional)/protocol/target`.
 Example request to `https://api.ipify.org`:
@@ -189,6 +200,56 @@ curl -x http://127.0.0.1:2260 \
   -U "Default.user_tom:my-token" \
   https://api.ipify.org
 ```
+
+The same V1 credentials also work with the standard proxy URL form:
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  https://api.ipify.org
+```
+
+#### Force-rotate the current sticky IP for this request
+
+If the current sticky egress IP gets risk-controlled, programmatic clients can ask Resin to rotate before routing the request by sending `X-Resin-Rotate: true`.
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  -H "X-Resin-Rotate: true" \
+  https://api.ipify.org
+```
+
+Behavior:
+
+- This only applies when the request already carries an `Account`.
+- Resin prefers a different egress IP from the current sticky lease.
+- If no alternate egress IP is available inside the same Platform, Resin keeps the current lease and still serves the request.
+- Resin strips `X-Resin-Rotate` before forwarding traffic upstream.
+
+> [!NOTE]
+> This header is intended for programmatic HTTP clients. Browser proxy settings usually support the proxy URL form, but do not reliably let you attach a per-request proxy control header.
+
+#### Rotate via a dedicated API endpoint
+
+If your client cannot attach `X-Resin-Rotate`, Resin also exposes a dedicated rotate action on the inbound port:
+
+```bash
+curl -X POST "http://127.0.0.1:2260/my-token/api/v1/Default/actions/rotate-lease" \
+  -H "Content-Type: application/json" \
+  -d '{"account":"user_tom"}'
+```
+
+This deletes the current sticky lease for `Default.user_tom`. The next request from that account gets reassigned by the platform policy.
+
+#### Platform UI export templates
+
+The Platform detail page now includes:
+
+- Standard proxy URL export: `http://Platform:token@host:port`
+- Sticky proxy URL export: `http://Platform.Account:token@host:port`
+- Multi-account template export: `http://Platform.{account}:token@host:port`
+- Rotate API export for external services
+
+The new `Proxy Access Mode` switch is intentionally lightweight: it changes the platform's exported access templates in UI, but does not change Resin's core routing model. Sticky behavior still depends on `Platform + Account`.
 
 #### Method 2: Reverse proxy (URL Account, quick/manual debug)
 

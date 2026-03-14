@@ -9,13 +9,15 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
+import { Switch } from "../../components/ui/Switch";
 import { Textarea } from "../../components/ui/Textarea";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatGoDuration, formatRelativeTime } from "../../lib/time";
-import { clearAllPlatformLeases, deletePlatform, getPlatform, resetPlatform, updatePlatform } from "./api";
+import { getEnvConfig } from "../systemConfig/api";
+import { clearAllPlatformLeases, deletePlatform, getPlatform, resetPlatform, rotatePlatformLease, updatePlatform } from "./api";
 import {
   allocationPolicies,
   allocationPolicyLabel,
@@ -23,6 +25,9 @@ import {
   emptyAccountBehaviors,
   missActionLabel,
   missActions,
+  proxyAccessModeLabel,
+  rotationPolicies,
+  rotationPolicyLabel,
 } from "./constants";
 import {
   defaultPlatformFormValues,
@@ -43,11 +48,42 @@ const DETAIL_TABS: Array<{ key: PlatformDetailTab; label: string; hint: string }
   { key: "ops", label: "运维", hint: "重置、清租约、删除操作" },
 ];
 
+function normalizeProxyHost(host: string): string {
+  const trimmed = host.trim();
+  return trimmed || "127.0.0.1";
+}
+
+function normalizeProxyPort(port: string): string {
+  const trimmed = port.trim();
+  return trimmed || "2260";
+}
+
+function buildProxyAuthority(host: string, port: string): string {
+  return `${normalizeProxyHost(host)}:${normalizeProxyPort(port)}`;
+}
+
+function buildForwardProxyURL(platformName: string, token: string, authority: string): string {
+  return `http://${platformName}:${token}@${authority}`;
+}
+
+function buildStickyProxyURL(platformName: string, account: string, token: string, authority: string): string {
+  return `http://${platformName}.${account}:${token}@${authority}`;
+}
+
+function buildStickyTemplateURL(platformName: string, token: string, authority: string): string {
+  return `http://${platformName}.{account}:${token}@${authority}`;
+}
+
 export function PlatformDetailPage() {
   const { t } = useI18n();
   const { platformId = "" } = useParams();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<PlatformDetailTab>("monitor");
+  const [exportHost, setExportHost] = useState("");
+  const [exportPort, setExportPort] = useState("");
+  const [exportToken, setExportToken] = useState("my-token");
+  const [exportAccount, setExportAccount] = useState("account_001");
+  const [rotateAccount, setRotateAccount] = useState("");
   const { toasts, showToast, dismissToast } = useToast();
   const queryClient = useQueryClient();
   const formatPlatformMutationError = (error: unknown) => {
@@ -65,6 +101,10 @@ export function PlatformDetailPage() {
     refetchInterval: 30_000,
     placeholderData: (previous) => previous,
   });
+  const envConfigQuery = useQuery({
+    queryKey: ["system-env-config", "proxy-export"],
+    queryFn: getEnvConfig,
+  });
 
   const platform = platformQuery.data ?? null;
 
@@ -73,6 +113,8 @@ export function PlatformDetailPage() {
     defaultValues: defaultPlatformFormValues,
   });
   const detailEmptyAccountBehavior = editForm.watch("reverse_proxy_empty_account_behavior");
+  const detailProxyAccessMode = editForm.watch("proxy_access_mode");
+  const detailRotationPolicy = editForm.watch("rotation_policy");
 
   useEffect(() => {
     if (!platform) {
@@ -80,6 +122,26 @@ export function PlatformDetailPage() {
     }
     editForm.reset(platformToFormValues(platform));
   }, [platform, editForm]);
+
+  useEffect(() => {
+    const nextHost = typeof window !== "undefined" ? window.location.hostname : "";
+    if (!exportHost && nextHost) {
+      setExportHost(nextHost);
+    }
+  }, [exportHost]);
+
+  useEffect(() => {
+    const nextPort = envConfigQuery.data?.resin_port ? String(envConfigQuery.data.resin_port) : "";
+    if (!exportPort && nextPort) {
+      setExportPort(nextPort);
+    }
+  }, [envConfigQuery.data, exportPort]);
+
+  useEffect(() => {
+    if (!rotateAccount && exportAccount) {
+      setRotateAccount(exportAccount);
+    }
+  }, [exportAccount, rotateAccount]);
 
   const invalidatePlatform = async (id: string) => {
     await Promise.all([
@@ -140,6 +202,23 @@ export function PlatformDetailPage() {
     },
   });
 
+  const rotateLeaseMutation = useMutation({
+    mutationFn: async () => {
+      if (!platform) {
+        throw new Error("平台不存在或已被删除");
+      }
+      await rotatePlatformLease(platform.id, rotateAccount.trim());
+      return platform;
+    },
+    onSuccess: async (updated) => {
+      await queryClient.invalidateQueries({ queryKey: ["platform-monitor"] });
+      showToast("success", t("平台 {{name}} 的账号 {{account}} 已触发换 IP", { name: updated.name, account: rotateAccount.trim() }));
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!platform) {
@@ -187,10 +266,45 @@ export function PlatformDetailPage() {
     await clearLeasesMutation.mutateAsync();
   };
 
-  const stickyTTL = platform ? formatGoDuration(platform.sticky_ttl, t("默认")) : t("默认");
+  const copyText = async (value: string, successMessage: string) => {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(value);
+      showToast("success", successMessage);
+    } catch {
+      showToast("error", t("当前浏览器无法直接复制，请手动复制文本。"));
+    }
+  };
+
+  const handleRotateLease = async () => {
+    if (!platform) {
+      return;
+    }
+    if (!rotateAccount.trim()) {
+      showToast("error", t("请输入需要切换的账号"));
+      return;
+    }
+    await rotateLeaseMutation.mutateAsync();
+  };
+
+  const rotationInterval = platform
+    ? platform.rotation_policy === "KEEP"
+      ? t("不自动轮换")
+      : formatGoDuration(platform.rotation_interval || platform.sticky_ttl, t("默认"))
+    : t("默认");
   const regionCount = platform?.region_filters.length ?? 0;
   const regexCount = platform?.regex_filters.length ?? 0;
   const deleteDisabled = !platform || platform.id === ZERO_UUID || deleteMutation.isPending;
+  const authority = buildProxyAuthority(exportHost, exportPort);
+  const plainProxyURL = platform ? buildForwardProxyURL(platform.name, exportToken, authority) : "";
+  const stickyProxyURL = platform ? buildStickyProxyURL(platform.name, exportAccount, exportToken, authority) : "";
+  const stickyTemplateURL = platform ? buildStickyTemplateURL(platform.name, exportToken, authority) : "";
+  const rotateAPIURL =
+    platform && exportToken
+      ? `http://${authority}/${exportToken}/api/v1/${platform.name}/actions/rotate-lease`
+      : "";
 
   return (
     <section className="platform-page platform-detail-page">
@@ -259,12 +373,20 @@ export function PlatformDetailPage() {
                   <strong>{regexCount}</strong>
                 </span>
                 <span className="platform-fact">
-                  <span>{t("租约时长")}</span>
-                  <strong>{stickyTTL}</strong>
+                  <span>{t("轮换策略")}</span>
+                  <strong>{t(rotationPolicyLabel[platform.rotation_policy])}</strong>
+                </span>
+                <span className="platform-fact">
+                  <span>{t("轮换周期")}</span>
+                  <strong>{rotationInterval}</strong>
                 </span>
                 <span className="platform-fact">
                   <span>{t("策略")}</span>
                   <strong>{t(allocationPolicyLabel[platform.allocation_policy])}</strong>
+                </span>
+                <span className="platform-fact">
+                  <span>{t("接入模式")}</span>
+                  <strong>{t(proxyAccessModeLabel[platform.proxy_access_mode])}</strong>
                 </span>
                 <span className="platform-fact">
                   <span>{t("未命中策略")}</span>
@@ -342,15 +464,63 @@ export function PlatformDetailPage() {
                   </div>
 
                   <div className="field-group">
-                    <label className="field-label" htmlFor="detail-edit-sticky">
-                      {t("租约保持时长")}
+                    <input type="hidden" {...editForm.register("proxy_access_mode")} />
+                    <label className="field-label" htmlFor="detail-edit-proxy-access-mode" style={{ visibility: "hidden" }}>
+                      {t("粘性代理模式")}
+                    </label>
+                    <div className="subscription-switch-item">
+                      <label className="subscription-switch-label" htmlFor="detail-edit-proxy-access-mode">
+                        <span>{t("粘性代理模式")}</span>
+                        <span className="muted">
+                          {detailProxyAccessMode === "STICKY"
+                            ? t("当前平台默认导出粘性代理地址，适合固定账号长期复用。")
+                            : t("当前平台默认导出普通代理地址，适合外部服务直接填入。")}
+                        </span>
+                      </label>
+                      <Switch
+                        id="detail-edit-proxy-access-mode"
+                        checked={detailProxyAccessMode === "STICKY"}
+                        onChange={(event) => {
+                          editForm.setValue("proxy_access_mode", event.target.checked ? "STICKY" : "STANDARD", {
+                            shouldDirty: true,
+                          });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-edit-rotation-policy">
+                      {t("轮换策略")}
+                    </label>
+                    <Select id="detail-edit-rotation-policy" {...editForm.register("rotation_policy")}>
+                      {rotationPolicies.map((item) => (
+                        <option key={item} value={item}>
+                          {t(rotationPolicyLabel[item])}
+                        </option>
+                      ))}
+                    </Select>
+                    <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {detailRotationPolicy === "KEEP"
+                        ? t("保持当前出口，直到故障或手动切换。")
+                        : t("到达轮换周期后，下次请求会重新分配出口。")}
+                    </p>
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-edit-rotation-interval">
+                      {t("轮换周期")}
                     </label>
                     <Input
-                      id="detail-edit-sticky"
-                      placeholder={t("例如 168h")}
-                      invalid={Boolean(editForm.formState.errors.sticky_ttl)}
-                      {...editForm.register("sticky_ttl")}
+                      id="detail-edit-rotation-interval"
+                      placeholder={t("例如 2m / 30m / 2h")}
+                      disabled={detailRotationPolicy !== "TTL"}
+                      invalid={Boolean(editForm.formState.errors.rotation_interval)}
+                      {...editForm.register("rotation_interval")}
                     />
+                    {editForm.formState.errors.rotation_interval?.message ? (
+                      <p className="field-error">{t(editForm.formState.errors.rotation_interval.message)}</p>
+                    ) : null}
                   </div>
 
                   <div className="field-group">
@@ -453,6 +623,86 @@ export function PlatformDetailPage() {
                     </Button>
                   </div>
                 </form>
+
+                <div className="platform-export-panel">
+                  <div className="platform-drawer-section-head">
+                    <h4>{t("接入模板")}</h4>
+                    <p>{t("直接复制到浏览器、脚本或外部服务里使用。")}</p>
+                  </div>
+
+                  <div className="platform-export-grid">
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="platform-export-host">
+                        {t("代理域名或地址")}
+                      </label>
+                      <Input id="platform-export-host" value={exportHost} onChange={(event) => setExportHost(event.target.value)} />
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="platform-export-port">
+                        {t("代理端口")}
+                      </label>
+                      <Input id="platform-export-port" value={exportPort} onChange={(event) => setExportPort(event.target.value)} />
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="platform-export-token">
+                        {t("代理 Token")}
+                      </label>
+                      <Input id="platform-export-token" value={exportToken} onChange={(event) => setExportToken(event.target.value)} />
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="platform-export-account">
+                        {t("示例账号")}
+                      </label>
+                      <Input id="platform-export-account" value={exportAccount} onChange={(event) => setExportAccount(event.target.value)} />
+                    </div>
+                  </div>
+
+                  <div className="platform-export-list">
+                    <div className="platform-export-item">
+                      <div className="platform-op-copy">
+                        <h5>{t("普通代理地址")}</h5>
+                        <p className="platform-op-hint">{t("适合只能填写一个 HTTP 代理地址的浏览器或第三方软件。")}</p>
+                      </div>
+                      <Input readOnly value={plainProxyURL} />
+                      <Button variant="secondary" onClick={() => void copyText(plainProxyURL, t("普通代理地址已复制"))}>
+                        {t("复制")}
+                      </Button>
+                    </div>
+
+                    <div className="platform-export-item">
+                      <div className="platform-op-copy">
+                        <h5>{t("粘性代理地址")}</h5>
+                        <p className="platform-op-hint">{t("固定账号时优先复用原出口 IP，适合登录、养号、长会话。")}</p>
+                      </div>
+                      <Input readOnly value={stickyProxyURL} />
+                      <Button variant="secondary" onClick={() => void copyText(stickyProxyURL, t("粘性代理地址已复制"))}>
+                        {t("复制")}
+                      </Button>
+                    </div>
+
+                    <div className="platform-export-item">
+                      <div className="platform-op-copy">
+                        <h5>{t("多账号模板")}</h5>
+                        <p className="platform-op-hint">{t("把 {account} 替换成你的业务账号名，每个账号都会独立保持粘性。")}</p>
+                      </div>
+                      <Input readOnly value={stickyTemplateURL} />
+                      <Button variant="secondary" onClick={() => void copyText(stickyTemplateURL, t("多账号模板已复制"))}>
+                        {t("复制")}
+                      </Button>
+                    </div>
+
+                    <div className="platform-export-item">
+                      <div className="platform-op-copy">
+                        <h5>{t("Rotate API 地址")}</h5>
+                        <p className="platform-op-hint">{t("当当前账号 IP 被风控时，可单独调用这个接口让下次请求换出口。")}</p>
+                      </div>
+                      <Input readOnly value={rotateAPIURL} />
+                      <Button variant="secondary" onClick={() => void copyText(rotateAPIURL, t("Rotate API 地址已复制"))}>
+                        {t("复制")}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               </section>
             ) : null}
 
@@ -469,6 +719,23 @@ export function PlatformDetailPage() {
                 </div>
 
                 <div className="platform-ops-list">
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("切换指定账号 IP")}</h5>
+                      <p className="platform-op-hint">{t("输入账号后执行 rotate，下次该账号请求会重新分配出口。")}</p>
+                    </div>
+                    <div className="platform-rotate-inline">
+                      <Input
+                        value={rotateAccount}
+                        onChange={(event) => setRotateAccount(event.target.value)}
+                        placeholder={t("输入账号，例如 account_001")}
+                      />
+                      <Button variant="secondary" onClick={() => void handleRotateLease()} disabled={rotateLeaseMutation.isPending}>
+                        {rotateLeaseMutation.isPending ? t("切换中...") : t("切换 IP")}
+                      </Button>
+                    </div>
+                  </div>
+
                   <div className="platform-op-item">
                     <div className="platform-op-copy">
                       <h5>{t("重置为默认配置")}</h5>

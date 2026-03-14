@@ -44,6 +44,8 @@ func NewConfiguredPlatform(
 	regexFilters []*regexp.Regexp,
 	regionFilters []string,
 	stickyTTLNs int64,
+	rotationPolicy string,
+	rotationIntervalNs int64,
 	missAction string,
 	emptyAccountBehavior string,
 	fixedAccountHeader string,
@@ -56,6 +58,8 @@ func NewConfiguredPlatform(
 	}
 	plat := NewPlatform(id, name, regexFilters, regionFilters)
 	plat.StickyTTLNs = stickyTTLNs
+	plat.RotationPolicy = EffectiveRotationPolicy(rotationPolicy, rotationIntervalNs, stickyTTLNs)
+	plat.RotationIntervalNs = EffectiveRotationIntervalNs(rotationIntervalNs, stickyTTLNs)
 	plat.ReverseProxyMissAction = missAction
 	plat.ReverseProxyEmptyAccountBehavior = emptyAccountBehavior
 	plat.ReverseProxyFixedAccountHeader = normalizedFixedHeaders
@@ -112,6 +116,8 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		regexFilters,
 		append([]string(nil), mp.RegionFilters...),
 		mp.StickyTTLNs,
+		mp.RotationPolicy,
+		mp.RotationIntervalNs,
 		string(missAction),
 		emptyAccountBehavior,
 		fixedHeader,

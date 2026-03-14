@@ -121,6 +121,7 @@ type parsedPath struct {
 var forwardingIdentityHeaders = []string{
 	// Internal account override header must not leak to upstream services.
 	"X-Resin-Account",
+	"X-Resin-Rotate",
 	"Forwarded",
 	"X-Forwarded-For",
 	"X-Forwarded-Host",
@@ -381,7 +382,14 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, parsed.PlatformName, account, parsed.Host)
+	routed, routeErr := resolveRoutedOutboundWithOptions(
+		p.router,
+		p.pool,
+		parsed.PlatformName,
+		account,
+		parsed.Host,
+		rotateRouteOptions(r.Header),
+	)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)

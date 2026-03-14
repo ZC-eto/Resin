@@ -180,6 +180,68 @@ func TestForwardProxy_E2ELocalHTTPProxy_FromHTTPSubscription(t *testing.T) {
 	}
 }
 
+func TestForwardProxy_E2ELocalHTTPProxy_V1UserInfoCredentials(t *testing.T) {
+	const rawOutbound = `{"type":"shadowsocks","tag":"edge-v1","server":"198.51.100.11","server_port":443,"method":"aes-256-gcm","password":"secret"}`
+	subBody := `{"outbounds":[` + rawOutbound + `]}`
+
+	subSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(subBody))
+	}))
+	defer subSrv.Close()
+
+	env := newProxyE2EEnvFromSubscriptionURL(t, subSrv.URL)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Proxy-Authorization"); got != "" {
+			t.Fatalf("Proxy-Authorization leaked to upstream: %q", got)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("forward-v1-userinfo"))
+	}))
+	defer upstream.Close()
+
+	fp := NewForwardProxy(ForwardProxyConfig{
+		ProxyToken:  "tok",
+		AuthVersion: "V1",
+		Router:      env.router,
+		Pool:        env.pool,
+		Health:      &mockHealthRecorder{},
+		Events:      NoOpEventEmitter{},
+	})
+	proxySrv := httptest.NewServer(fp)
+	defer proxySrv.Close()
+
+	proxyURL, err := url.Parse(proxySrv.URL)
+	if err != nil {
+		t.Fatalf("parse proxy url: %v", err)
+	}
+	proxyURL.User = url.UserPassword("plat.browser-user", "tok")
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+	t.Cleanup(func() { client.CloseIdleConnections() })
+
+	resp, err := client.Get(upstream.URL + "/v1/ping")
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status: got %d, want %d (body=%q)", resp.StatusCode, http.StatusCreated, string(body))
+	}
+	if got := string(body); got != "forward-v1-userinfo" {
+		t.Fatalf("body: got %q, want %q", got, "forward-v1-userinfo")
+	}
+}
+
 func TestReverseProxy_E2EServer_FromHTTPSubscription(t *testing.T) {
 	const rawOutbound = `{"type":"vmess","tag":"edge-b","server":"198.51.100.20","server_port":443,"uuid":"11111111-1111-1111-1111-111111111111"}`
 	subBody := `{"outbounds":[` + rawOutbound + `]}`

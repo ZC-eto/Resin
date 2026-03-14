@@ -2476,6 +2476,42 @@ a {
   margin-top: 4px;
 }
 
+.platform-export-panel {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(37, 72, 120, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.platform-export-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.platform-export-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.platform-export-item {
+  border: 1px solid rgba(37, 72, 120, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 240px) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.platform-export-item .input {
+  min-width: 0;
+}
+
 .platform-monitor-section {
   border-color: rgba(37, 72, 120, 0.18);
   background:
@@ -2633,6 +2669,13 @@ a {
   flex-shrink: 0;
 }
 
+.platform-rotate-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: min(460px, 100%);
+}
+
 @keyframes drawer-in {
   from {
     opacity: 0;
@@ -2765,6 +2808,19 @@ a {
   }
 
   .platform-op-item .btn {
+    width: 100%;
+  }
+
+  .platform-export-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-export-item {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-rotate-inline {
+    grid-template-columns: 1fr;
     width: 100%;
   }
 

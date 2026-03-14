@@ -236,6 +236,37 @@ func parseProxyAuthorizationCredentialV1(auth string) (string, bool) {
 	return string(decoded), true
 }
 
+const resinRotateHeader = "X-Resin-Rotate"
+
+func rotateRequested(header http.Header) bool {
+	if header == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(header.Get(resinRotateHeader))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func rotateRouteOptions(header http.Header) routing.RouteOptions {
+	if !rotateRequested(header) {
+		return routing.RouteOptions{}
+	}
+	return routing.RouteOptions{
+		ForceRotate: true,
+		RotateSource: string(routing.RotateSourceRequestHeader),
+	}
+}
+
+func stripInternalControlHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	header.Del(resinRotateHeader)
+}
+
 // hop-by-hop headers that must not be forwarded to the next hop.
 var hopByHopHeaders = []string{
 	"Connection",
@@ -293,6 +324,7 @@ func prepareForwardOutboundRequest(in *http.Request) *http.Request {
 	// Do not propagate client-side close semantics to upstream transport reuse.
 	req.Close = false
 	stripHopByHopHeaders(req.Header)
+	stripInternalControlHeaders(req.Header)
 	return req
 }
 
@@ -308,7 +340,14 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, platName, account, r.Host)
+	routed, routeErr := resolveRoutedOutboundWithOptions(
+		p.router,
+		p.pool,
+		platName,
+		account,
+		r.Host,
+		rotateRouteOptions(r.Header),
+	)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -385,7 +424,14 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, platName, account, target)
+	routed, routeErr := resolveRoutedOutboundWithOptions(
+		p.router,
+		p.pool,
+		platName,
+		account,
+		target,
+		rotateRouteOptions(r.Header),
+	)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)

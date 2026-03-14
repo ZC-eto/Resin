@@ -23,6 +23,8 @@ const (
 	stateVersionAddEmptyAccountBehavior = 2
 	stateVersionAddFixedAccountHeader   = 3
 	stateVersionNormalizeMissAction     = 4
+	stateVersionAddProxyAccessMode      = 5
+	stateVersionAddRotationPolicy       = 6
 	stateLegacyBaselineVersion          = stateVersionAddFixedAccountHeader
 )
 
@@ -104,8 +106,24 @@ func prepareLegacyStateBaseline(db *sql.DB, driver migratedb.Driver) error {
 	if err != nil {
 		return err
 	}
+	hasProxyAccessMode, err := hasTableColumn(db, "platforms", "proxy_access_mode")
+	if err != nil {
+		return err
+	}
+	hasRotationPolicy, err := hasTableColumn(db, "platforms", "rotation_policy")
+	if err != nil {
+		return err
+	}
+	hasRotationInterval, err := hasTableColumn(db, "platforms", "rotation_interval_ns")
+	if err != nil {
+		return err
+	}
 
 	switch {
+	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval:
+		return setMigrationVersion(driver, stateVersionAddRotationPolicy)
+	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode:
+		return setMigrationVersion(driver, stateVersionAddProxyAccessMode)
 	case hasEmptyBehavior && hasFixedHeader:
 		return setMigrationVersion(driver, stateLegacyBaselineVersion)
 	case hasEmptyBehavior && !hasFixedHeader:

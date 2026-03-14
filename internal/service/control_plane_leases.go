@@ -139,6 +139,41 @@ func (s *ControlPlaneService) DeleteLease(platformID, account string) error {
 	return nil
 }
 
+// RotateLease removes the current sticky lease so the next request is reassigned.
+func (s *ControlPlaneService) RotateLease(platformID, account string) error {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return invalidArg("account: must be non-empty")
+	}
+	if _, ok := s.Pool.GetPlatform(platformID); !ok {
+		return notFound("platform not found")
+	}
+	if !s.Router.RotateLease(platformID, account, routing.RotateSourceAdminAPI) {
+		return notFound("lease not found")
+	}
+	return nil
+}
+
+// RotateLeaseByPlatformName removes the current sticky lease by platform name.
+func (s *ControlPlaneService) RotateLeaseByPlatformName(platformName, account string) error {
+	platformName = strings.TrimSpace(platformName)
+	if platformName == "" {
+		return invalidArg("platform: must be non-empty")
+	}
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return invalidArg("account: must be non-empty")
+	}
+	plat, ok := s.Pool.GetPlatformByName(platformName)
+	if !ok || plat == nil {
+		return notFound("platform not found")
+	}
+	if !s.Router.RotateLease(plat.ID, account, routing.RotateSourceTokenAPI) {
+		return notFound("lease not found")
+	}
+	return nil
+}
+
 // DeleteAllLeases removes all leases for a platform.
 func (s *ControlPlaneService) DeleteAllLeases(platformID string) error {
 	if _, ok := s.Pool.GetPlatform(platformID); !ok {

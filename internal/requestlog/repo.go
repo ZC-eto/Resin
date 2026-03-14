@@ -18,7 +18,7 @@ import (
 	"github.com/Resinat/Resin/internal/state"
 )
 
-const logSummarySelectColumns = "id, ts_ns, proxy_type, client_ip, platform_id, platform_name, account, target_host, target_url, node_hash, node_tag, egress_ip, duration_ns, net_ok, http_method, http_status, resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg, ingress_bytes, egress_bytes, payload_present, req_headers_len, req_body_len, resp_headers_len, resp_body_len, req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated"
+const logSummarySelectColumns = "id, ts_ns, proxy_type, client_ip, platform_id, platform_name, account, access_mode, lease_action, rotate_requested, rotate_applied, rotate_source, target_host, target_url, node_hash, node_tag, egress_ip, previous_egress_ip, duration_ns, net_ok, http_method, http_status, resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg, ingress_bytes, egress_bytes, payload_present, req_headers_len, req_body_len, resp_headers_len, resp_body_len, req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated"
 
 // Repo manages rolling SQLite databases for request logs.
 // Each DB is named request_logs-<unix_ms>.db and lives in logDir.
@@ -111,15 +111,16 @@ func (r *Repo) InsertBatch(entries []proxy.RequestLogEntry) (int, error) {
 
 	insertLog, err := tx.Prepare(`INSERT OR IGNORE INTO request_logs (
 		id, ts_ns, proxy_type, client_ip,
-		platform_id, platform_name, account,
-		target_host, target_url, node_hash, node_tag, egress_ip,
+		platform_id, platform_name, account, access_mode, lease_action,
+		rotate_requested, rotate_applied, rotate_source,
+		target_host, target_url, node_hash, node_tag, egress_ip, previous_egress_ip,
 		duration_ns, net_ok, http_method, http_status,
 		resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg,
 		ingress_bytes, egress_bytes,
 		payload_present,
 		req_headers_len, req_body_len, resp_headers_len, resp_body_len,
 		req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return 0, fmt.Errorf("requestlog repo prepare log: %w", err)
 	}
@@ -151,8 +152,9 @@ func (r *Repo) InsertBatch(entries []proxy.RequestLogEntry) (int, error) {
 
 		_, err := insertLog.Exec(
 			id, e.StartedAtNs, int(e.ProxyType), e.ClientIP,
-			e.PlatformID, e.PlatformName, e.Account,
-			e.TargetHost, e.TargetURL, e.NodeHash, e.NodeTag, e.EgressIP,
+			e.PlatformID, e.PlatformName, e.Account, e.AccessMode, e.LeaseAction,
+			boolToInt(e.RotateRequested), boolToInt(e.RotateApplied), e.RotateSource,
+			e.TargetHost, e.TargetURL, e.NodeHash, e.NodeTag, e.EgressIP, e.PreviousEgressIP,
 			e.DurationNs, netOK, e.HTTPMethod, e.HTTPStatus,
 			e.ResinError, e.UpstreamStage, e.UpstreamErrKind, e.UpstreamErrno, e.UpstreamErrMsg,
 			e.IngressBytes, e.EgressBytes,
@@ -206,11 +208,17 @@ type LogSummary struct {
 	PlatformID      string `json:"platform_id"`
 	PlatformName    string `json:"platform_name"`
 	Account         string `json:"account"`
+	AccessMode      string `json:"access_mode"`
+	LeaseAction     string `json:"lease_action"`
+	RotateRequested bool   `json:"rotate_requested"`
+	RotateApplied   bool   `json:"rotate_applied"`
+	RotateSource    string `json:"rotate_source"`
 	TargetHost      string `json:"target_host"`
 	TargetURL       string `json:"target_url"`
 	NodeHash        string `json:"node_hash"`
 	NodeTag         string `json:"node_tag"`
 	EgressIP        string `json:"egress_ip"`
+	PreviousEgressIP string `json:"previous_egress_ip"`
 	DurationNs      int64  `json:"duration_ns"`
 	NetOK           bool   `json:"net_ok"`
 	HTTPMethod      string `json:"http_method"`
@@ -429,6 +437,10 @@ func (r *Repo) openDB(path string) error {
 		db.Close()
 		return err
 	}
+	if err := ensureRequestLogSchema(db); err != nil {
+		db.Close()
+		return fmt.Errorf("requestlog ensure schema: %w", err)
+	}
 	r.activeDB = db
 	r.activePath = path
 	return nil
@@ -635,11 +647,12 @@ type rowScanner interface {
 
 func scanLogSummary(s rowScanner) (LogSummary, error) {
 	var row LogSummary
-	var netOK, payloadPresent, rht, rbt, rsht, rsbt int
+	var netOK, rotateRequested, rotateApplied, payloadPresent, rht, rbt, rsht, rsbt int
 	err := s.Scan(
 		&row.ID, &row.TsNs, &row.ProxyType, &row.ClientIP,
-		&row.PlatformID, &row.PlatformName, &row.Account,
-		&row.TargetHost, &row.TargetURL, &row.NodeHash, &row.NodeTag, &row.EgressIP,
+		&row.PlatformID, &row.PlatformName, &row.Account, &row.AccessMode, &row.LeaseAction,
+		&rotateRequested, &rotateApplied, &row.RotateSource,
+		&row.TargetHost, &row.TargetURL, &row.NodeHash, &row.NodeTag, &row.EgressIP, &row.PreviousEgressIP,
 		&row.DurationNs, &netOK, &row.HTTPMethod, &row.HTTPStatus,
 		&row.ResinError, &row.UpstreamStage, &row.UpstreamErrKind, &row.UpstreamErrno, &row.UpstreamErrMsg,
 		&row.IngressBytes, &row.EgressBytes,
@@ -651,6 +664,8 @@ func scanLogSummary(s rowScanner) (LogSummary, error) {
 		return LogSummary{}, err
 	}
 	row.NetOK = netOK != 0
+	row.RotateRequested = rotateRequested != 0
+	row.RotateApplied = rotateApplied != 0
 	row.PayloadPresent = payloadPresent != 0
 	row.ReqHeadersTruncated = rht != 0
 	row.ReqBodyTruncated = rbt != 0
@@ -664,6 +679,72 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+type requestLogColumnSpec struct {
+	Name string
+	DDL  string
+}
+
+var requestLogExtraColumns = []requestLogColumnSpec{
+	{Name: "access_mode", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "lease_action", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "rotate_requested", DDL: "INTEGER NOT NULL DEFAULT 0"},
+	{Name: "rotate_applied", DDL: "INTEGER NOT NULL DEFAULT 0"},
+	{Name: "rotate_source", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "previous_egress_ip", DDL: "TEXT NOT NULL DEFAULT ''"},
+}
+
+func ensureRequestLogSchema(db *sql.DB) error {
+	for _, column := range requestLogExtraColumns {
+		ok, err := hasSQLiteColumn(db, "request_logs", column.Name)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if _, err := db.Exec(
+			fmt.Sprintf("ALTER TABLE request_logs ADD COLUMN %s %s", column.Name, column.DDL),
+		); err != nil {
+			return fmt.Errorf("add request_logs.%s: %w", column.Name, err)
+		}
+	}
+
+	_, err := db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_request_logs_access_mode ON request_logs(access_mode);
+CREATE INDEX IF NOT EXISTS idx_request_logs_lease_action ON request_logs(lease_action);
+`)
+	if err != nil {
+		return fmt.Errorf("ensure requestlog indexes: %w", err)
+	}
+	return nil
+}
+
+func hasSQLiteColumn(db *sql.DB, tableName string, columnName string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // sqliteFilesSize returns the total size of a SQLite database set:

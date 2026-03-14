@@ -49,11 +49,17 @@ type RequestLogEntry struct {
 	PlatformID      string
 	PlatformName    string
 	Account         string
+	AccessMode      string
+	LeaseAction     string
+	RotateRequested bool
+	RotateApplied   bool
+	RotateSource    string
 	TargetHost      string
 	TargetURL       string
 	NodeHash        string
 	NodeTag         string // display tag: "<Subscription>/<Tag>" (DESIGN.md §601)
 	EgressIP        string
+	PreviousEgressIP string
 	DurationNs      int64
 	NetOK           bool
 	HTTPMethod      string

@@ -334,3 +334,53 @@ func TestInheritLeaseByPlatformName_InvalidArguments(t *testing.T) {
 		})
 	}
 }
+
+func TestRotateLease_RemovesLease(t *testing.T) {
+	cp, plat := newLeaseInheritanceTestService()
+
+	now := time.Now().UnixNano()
+	seedLease(t, cp, model.Lease{
+		PlatformID:     plat.ID,
+		Account:        "alice",
+		NodeHash:       node.HashFromRawOptions([]byte(`{"id":"rotate-node"}`)).Hex(),
+		EgressIP:       "203.0.113.88",
+		CreatedAtNs:    now - int64(time.Minute),
+		ExpiryNs:       now + int64(time.Hour),
+		LastAccessedNs: now,
+	})
+
+	if err := cp.RotateLease(plat.ID, "alice"); err != nil {
+		t.Fatalf("RotateLease: %v", err)
+	}
+	if got := cp.Router.ReadLease(model.LeaseKey{PlatformID: plat.ID, Account: "alice"}); got != nil {
+		t.Fatal("expected lease to be deleted after rotation")
+	}
+}
+
+func TestRotateLeaseByPlatformName_InvalidArgumentsAndMissingLease(t *testing.T) {
+	cp, plat := newLeaseInheritanceTestService()
+
+	err := cp.RotateLeaseByPlatformName("", "alice")
+	if err == nil {
+		t.Fatal("expected INVALID_ARGUMENT for empty platform")
+	}
+	assertServiceErrorCode(t, err, "INVALID_ARGUMENT")
+
+	err = cp.RotateLeaseByPlatformName(plat.Name, "   ")
+	if err == nil {
+		t.Fatal("expected INVALID_ARGUMENT for empty account")
+	}
+	assertServiceErrorCode(t, err, "INVALID_ARGUMENT")
+
+	err = cp.RotateLeaseByPlatformName("missing-platform", "alice")
+	if err == nil {
+		t.Fatal("expected NOT_FOUND for missing platform")
+	}
+	assertServiceErrorCode(t, err, "NOT_FOUND")
+
+	err = cp.RotateLeaseByPlatformName(plat.Name, "missing-account")
+	if err == nil {
+		t.Fatal("expected NOT_FOUND for missing lease")
+	}
+	assertServiceErrorCode(t, err, "NOT_FOUND")
+}

@@ -13,6 +13,8 @@ func TestBuildFromModel_Success(t *testing.T) {
 		ID:                               "plat-1",
 		Name:                             "Platform-1",
 		StickyTTLNs:                      3600,
+		RotationPolicy:                   "TTL",
+		RotationIntervalNs:               3600,
 		RegexFilters:                     []string{`^us-.*$`},
 		RegionFilters:                    []string{"us", "jp"},
 		ReverseProxyMissAction:           "REJECT",
@@ -31,6 +33,12 @@ func TestBuildFromModel_Success(t *testing.T) {
 	}
 	if plat.StickyTTLNs != mp.StickyTTLNs {
 		t.Fatalf("sticky ttl mismatch: got %d want %d", plat.StickyTTLNs, mp.StickyTTLNs)
+	}
+	if plat.RotationPolicy != RotationPolicyTTL {
+		t.Fatalf("rotation policy mismatch: got %q want %q", plat.RotationPolicy, RotationPolicyTTL)
+	}
+	if plat.RotationIntervalNs != mp.RotationIntervalNs {
+		t.Fatalf("rotation interval mismatch: got %d want %d", plat.RotationIntervalNs, mp.RotationIntervalNs)
 	}
 	if plat.ReverseProxyMissAction != mp.ReverseProxyMissAction {
 		t.Fatalf("miss action mismatch: got %q want %q", plat.ReverseProxyMissAction, mp.ReverseProxyMissAction)
