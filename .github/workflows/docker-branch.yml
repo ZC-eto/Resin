@@ -68,8 +68,18 @@ jobs:
     steps:
       - name: Trigger Dokploy redeploy
         env:
-          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
+          DOKPLOY_HOST: ${{ secrets.DOKPLOY_HOST }}
+          DOKPLOY_DIRECT_IP: ${{ secrets.DOKPLOY_DIRECT_IP }}
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          DOKPLOY_COMPOSE_ID: ${{ secrets.DOKPLOY_COMPOSE_ID }}
         run: |
           set -euo pipefail
-          : "${DOKPLOY_DEPLOY_WEBHOOK:?missing DOKPLOY_DEPLOY_WEBHOOK}"
-          curl -fsS -X POST "${DOKPLOY_DEPLOY_WEBHOOK}"
+          : "${DOKPLOY_HOST:?missing DOKPLOY_HOST}"
+          : "${DOKPLOY_DIRECT_IP:?missing DOKPLOY_DIRECT_IP}"
+          : "${DOKPLOY_API_KEY:?missing DOKPLOY_API_KEY}"
+          : "${DOKPLOY_COMPOSE_ID:?missing DOKPLOY_COMPOSE_ID}"
+          curl -fsS --insecure -X POST "https://${DOKPLOY_DIRECT_IP}/api/compose.deploy" \
+            -H "Host: ${DOKPLOY_HOST}" \
+            -H "x-api-key: ${DOKPLOY_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"composeId\":\"${DOKPLOY_COMPOSE_ID}\"}"
