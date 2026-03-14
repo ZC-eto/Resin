@@ -487,6 +487,54 @@ func TestPrepareForwardOutboundRequest_NormalizesClientCloseAndHeaders(t *testin
 	}
 }
 
+func TestRotateRequested(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "missing", value: "", want: false},
+		{name: "true", value: "true", want: true},
+		{name: "upper_true", value: "TRUE", want: true},
+		{name: "one", value: "1", want: true},
+		{name: "yes", value: "yes", want: true},
+		{name: "on", value: "on", want: true},
+		{name: "false", value: "false", want: false},
+		{name: "zero", value: "0", want: false},
+		{name: "other", value: "maybe", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			if tt.value != "" {
+				header.Set(resinRotateHeader, tt.value)
+			}
+			if got := rotateRequested(header); got != tt.want {
+				t.Fatalf("rotateRequested(%q): got %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrepareForwardOutboundRequest_StripsResinRotateHeader(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://example.com/path", nil)
+	req.Header.Set(resinRotateHeader, "true")
+	req.Header.Set("X-Normal-Header", "keep")
+
+	out := prepareForwardOutboundRequest(req)
+
+	if got := out.Header.Get(resinRotateHeader); got != "" {
+		t.Fatalf("%s should be stripped, got %q", resinRotateHeader, got)
+	}
+	if got := out.Header.Get("X-Normal-Header"); got != "keep" {
+		t.Fatalf("X-Normal-Header: got %q, want %q", got, "keep")
+	}
+	if got := req.Header.Get(resinRotateHeader); got != "true" {
+		t.Fatalf("original request header should remain unchanged, got %q", got)
+	}
+}
+
 func TestForwardProxy_AuthAndSetup(t *testing.T) {
 	// Start upstream server.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1426,6 +1474,7 @@ func TestStripForwardingIdentityHeaders(t *testing.T) {
 	header := http.Header{}
 	header.Set("Forwarded", "for=1.2.3.4;proto=https")
 	header.Set("X-Resin-Account", "debug-account")
+	header.Set("X-Resin-Rotate", "true")
 	header.Set("X-Forwarded-For", "1.2.3.4")
 	header.Set("X-Forwarded-Host", "origin.example.com")
 	header.Set("X-Forwarded-Proto", "https")
@@ -1442,7 +1491,7 @@ func TestStripForwardingIdentityHeaders(t *testing.T) {
 	stripForwardingIdentityHeaders(header)
 
 	for _, h := range []string{
-		"X-Resin-Account", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto",
+		"X-Resin-Account", "X-Resin-Rotate", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto",
 		"X-Forwarded-Port", "X-Forwarded-Server", "Via",
 		"X-Real-IP", "X-Client-IP", "True-Client-IP",
 		"CF-Connecting-IP", "X-ProxyUser-Ip",

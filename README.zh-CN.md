@@ -120,6 +120,17 @@ curl -x http://127.0.0.1:2260 \
   https://api.ipify.org
 ```
 
+很多浏览器和 HTTP 客户端也支持标准代理 URL 写法 `http://user:pass@host:port`。
+对于 Resin，这只是同一套 Basic 认证信息的另一种传递方式：
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  https://api.ipify.org
+```
+
+> [!WARNING]
+> `http://user:pass@host:port` 用起来方便，但在明文 HTTP 传输上**并不自带加密**。如果 Resin 会暴露在不可信网络上，请放在受信任的内网、TLS 终止代理、SSH 隧道或其他安全传输层之后再使用。
+
 如果你的客户端支持修改服务的 `BASE_URL`，你也可以尝试反向代理接入。URL 格式为：`/令牌/Platform(可选).Account(可选)/协议/目标地址`。例如，你可以通过下面的 curl 命令通过 Resin 访问 `https://api.ipify.org`。
 
 ```bash
@@ -176,6 +187,56 @@ curl -x http://127.0.0.1:2260 \
   -U "Default.user_tom:my-token" \
   https://api.ipify.org
 ```
+
+同样的 V1 凭证也可以直接写成标准代理 URL：
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  https://api.ipify.org
+```
+
+#### 显式切换当前请求的粘性 IP
+
+如果当前粘性出口 IP 已经被目标站风控，程序化客户端可以在本次请求里带上 `X-Resin-Rotate: true`，让 Resin 在真正路由之前先尝试切换：
+
+```bash
+curl -x http://Default.user_tom:my-token@127.0.0.1:2260 \
+  -H "X-Resin-Rotate: true" \
+  https://api.ipify.org
+```
+
+行为说明：
+
+- 只有在当前请求已经具备 `Account` 时，这个控制才会生效。
+- Resin 会优先选择一个**不同出口 IP** 的可用节点。
+- 如果当前 Platform 内没有其他可用出口 IP，Resin 会保留当前租约并继续处理请求，不会因为切换失败而中断当前请求。
+- `X-Resin-Rotate` 会在 Resin 转发前被剥离，不会泄露给上游目标站。
+
+> [!NOTE]
+> 这个控制头更适合程序化 HTTP 客户端。普通浏览器一般支持代理 URL 这种接入方式，但通常不方便对单个代理请求稳定地附加这个控制头。
+
+#### 使用独立 Rotate API 切换账号当前 IP
+
+如果你的客户端不方便附加 `X-Resin-Rotate`，也可以直接调用 Resin 入站端口上的独立 rotate 动作接口：
+
+```bash
+curl -X POST "http://127.0.0.1:2260/my-token/api/v1/Default/actions/rotate-lease" \
+  -H "Content-Type: application/json" \
+  -d '{"account":"user_tom"}'
+```
+
+这个动作会删除 `Default.user_tom` 当前的粘性租约。该账号的下一次请求会按照平台策略重新分配出口 IP。
+
+#### 平台管理页的导出模板
+
+平台详情页现在会直接导出几种常用模板：
+
+- 普通代理地址：`http://Platform:token@host:port`
+- 粘性代理地址：`http://Platform.Account:token@host:port`
+- 多账号模板：`http://Platform.{account}:token@host:port`
+- Rotate API 地址：供外部服务单独触发换 IP
+
+新增的“粘性代理模式”开关是一个轻量平台接入模式：它主要决定 UI 默认导出的代理模板，不改变 Resin 底层的核心路由模型。真正的粘性依旧依赖 `Platform + Account`。
 
 #### 方式二：反向代理接入（URL 携带 Account，适合简单使用/手动调试）
 你可以通过替换业务的 BaseURL 为 Resin 反代地址，将请求直接发给 Resin。

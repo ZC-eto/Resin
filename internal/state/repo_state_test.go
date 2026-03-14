@@ -62,6 +62,15 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	if ok, err := hasTableColumn(db, "platforms", "reverse_proxy_fixed_account_header"); err != nil || !ok {
 		t.Fatalf("expected migrated column reverse_proxy_fixed_account_header, ok=%v err=%v", ok, err)
 	}
+	if ok, err := hasTableColumn(db, "platforms", "proxy_access_mode"); err != nil || !ok {
+		t.Fatalf("expected migrated column proxy_access_mode, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "platforms", "rotation_policy"); err != nil || !ok {
+		t.Fatalf("expected migrated column rotation_policy, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "platforms", "rotation_interval_ns"); err != nil || !ok {
+		t.Fatalf("expected migrated column rotation_interval_ns, ok=%v err=%v", ok, err)
+	}
 }
 
 func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
@@ -103,8 +112,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddRotationPolicy {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddRotationPolicy)
 	}
 }
 
@@ -175,8 +184,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddRotationPolicy {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddRotationPolicy)
 	}
 }
 
@@ -258,6 +267,15 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 			"RANDOM",
 		)
 	}
+	if got.ProxyAccessMode != "STANDARD" {
+		t.Fatalf("unexpected proxy_access_mode: got %q, want %q", got.ProxyAccessMode, "STANDARD")
+	}
+	if got.RotationPolicy != "TTL" {
+		t.Fatalf("unexpected rotation_policy: got %q, want %q", got.RotationPolicy, "TTL")
+	}
+	if got.RotationIntervalNs != 1000 {
+		t.Fatalf("unexpected rotation_interval_ns: got %d, want %d", got.RotationIntervalNs, 1000)
+	}
 
 	// List.
 	list, err := repo.ListPlatforms()
@@ -306,6 +324,7 @@ func TestStateRepo_Platform_ValidationFixedHeaderBehavior(t *testing.T) {
 		RegexFilters: []string{}, RegionFilters: []string{},
 		ReverseProxyMissAction:           "TREAT_AS_EMPTY",
 		ReverseProxyEmptyAccountBehavior: "FIXED_HEADER",
+		ProxyAccessMode:                  "STICKY",
 		AllocationPolicy:                 "BALANCED",
 		UpdatedAtNs:                      now,
 	}

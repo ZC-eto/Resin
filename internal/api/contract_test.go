@@ -1181,6 +1181,14 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 		t.Fatalf("rebuild action status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
+	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/platforms/"+platformID+"/actions/rotate-lease", map[string]any{
+		"account": "missing-account",
+	}, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("rotate action missing lease status: got %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "NOT_FOUND")
+
 	// subscriptions
 	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions", map[string]any{
 		"name": "sub-a",

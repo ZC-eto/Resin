@@ -84,6 +84,7 @@ func NewServerWithAddress(
 		authed.Handle("DELETE /api/v1/platforms/{id}", HandleDeletePlatform(cp))
 		authed.Handle("POST /api/v1/platforms/{id}/actions/reset-to-default", HandleResetPlatform(cp))
 		authed.Handle("POST /api/v1/platforms/{id}/actions/rebuild-routable-view", HandleRebuildPlatform(cp))
+		authed.Handle("POST /api/v1/platforms/{id}/actions/rotate-lease", HandleRotatePlatformLease(cp))
 
 		// Leases (under platforms).
 		authed.Handle("GET /api/v1/platforms/{id}/leases", HandleListLeases(cp))

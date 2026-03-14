@@ -284,6 +284,56 @@ function proxyTypeLabel(proxyType: number): string {
   return String(proxyType);
 }
 
+function accessModeLabel(accessMode: string): string {
+  if (accessMode === "STICKY") {
+    return "粘性";
+  }
+  if (accessMode === "STANDARD") {
+    return "普通";
+  }
+  return accessMode || "-";
+}
+
+function leaseActionLabel(action: string): string {
+  switch (action) {
+    case "RANDOM_ASSIGN":
+      return "随机分配";
+    case "LEASE_CREATE":
+      return "新建租约";
+    case "LEASE_REUSE":
+      return "复用租约";
+    case "FORCED_ROTATE":
+      return "强制切换";
+    case "MANUAL_ROTATE_REASSIGN":
+      return "手动切换后重分配";
+    case "TTL_REASSIGN":
+      return "定时重分配";
+    case "PLATFORM_REASSIGN":
+      return "故障后重分配";
+    case "SAME_IP_FAILOVER":
+      return "同 IP 故障切换";
+    default:
+      return action || "-";
+  }
+}
+
+function rotateSourceLabel(source: string): string {
+  switch (source) {
+    case "REQUEST_HEADER":
+      return "请求头";
+    case "ADMIN_API":
+      return "管理接口";
+    case "TOKEN_API":
+      return "平台代理接口";
+    case "TTL_EXPIRED":
+      return "租约到期";
+    case "LEASE_UNAVAILABLE":
+      return "原租约失效";
+    default:
+      return source || "-";
+  }
+}
+
 function dateLocale(): string {
   return isEnglishLocale(getCurrentLocale()) ? "en-US" : "zh-CN";
 }
@@ -557,6 +607,38 @@ export function RequestLogsPage() {
             <div className="logs-cell-stack">
               <span title={log.target_host}>{log.target_host || "-"}</span>
               <small title={log.target_url}>{log.target_url || "-"}</small>
+            </div>
+          );
+        },
+      }),
+      col.display({
+        id: "route_mode",
+        header: t("模式 / 动作"),
+        cell: (info) => {
+          const log = info.row.original;
+          return (
+            <div className="logs-cell-stack">
+              <span>{accessModeLabel(log.access_mode)}</span>
+              <small>{leaseActionLabel(log.lease_action)}</small>
+            </div>
+          );
+        },
+      }),
+      col.display({
+        id: "rotate",
+        header: t("切换"),
+        cell: (info) => {
+          const log = info.row.original;
+          const variant = log.rotate_requested
+            ? (log.rotate_applied ? "accent" : "warning")
+            : "neutral";
+          const label = log.rotate_requested
+            ? (log.rotate_applied ? t("已切换") : t("已请求"))
+            : t("未触发");
+          return (
+            <div className="logs-cell-stack">
+              <Badge variant={variant}>{label}</Badge>
+              <small>{rotateSourceLabel(log.rotate_source)}</small>
             </div>
           );
         },
@@ -919,8 +1001,24 @@ export function RequestLogsPage() {
                     <p>{detailLog.account || "-"}</p>
                   </div>
                   <div>
+                    <span>{t("接入模式")}</span>
+                    <p>{accessModeLabel(detailLog.access_mode)}</p>
+                  </div>
+                  <div>
+                    <span>{t("路由动作")}</span>
+                    <p>{leaseActionLabel(detailLog.lease_action)}</p>
+                  </div>
+                  <div>
+                    <span>{t("切换触发")}</span>
+                    <p>{detailLog.rotate_requested ? rotateSourceLabel(detailLog.rotate_source) : t("未触发")}</p>
+                  </div>
+                  <div>
                     <span>{t("出口 IP")}</span>
                     <p>{detailLog.egress_ip || "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("上次出口 IP")}</span>
+                    <p>{detailLog.previous_egress_ip || "-"}</p>
                   </div>
                   <div>
                     <span>{t("客户端 IP")}</span>

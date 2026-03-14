@@ -10,6 +10,7 @@ import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { OffsetPagination } from "../../components/ui/OffsetPagination";
 import { Select } from "../../components/ui/Select";
+import { Switch } from "../../components/ui/Switch";
 import { Textarea } from "../../components/ui/Textarea";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
@@ -24,6 +25,9 @@ import {
   emptyAccountBehaviors,
   missActionLabel,
   missActions,
+  proxyAccessModeLabel,
+  rotationPolicies,
+  rotationPolicyLabel,
 } from "./constants";
 import {
   defaultPlatformFormValues,
@@ -79,6 +83,8 @@ export function PlatformPage() {
     defaultValues: defaultPlatformFormValues,
   });
   const createEmptyAccountBehavior = createForm.watch("reverse_proxy_empty_account_behavior");
+  const createProxyAccessMode = createForm.watch("proxy_access_mode");
+  const createRotationPolicy = createForm.watch("rotation_policy");
 
   const createMutation = useMutation({
     mutationFn: createPlatform,
@@ -176,7 +182,10 @@ export function PlatformPage() {
           {platforms.map((platform) => {
             const regionCount = platform.region_filters.length;
             const regexCount = platform.regex_filters.length;
-            const stickyTTL = formatGoDuration(platform.sticky_ttl, t("默认"));
+            const rotationInterval =
+              platform.rotation_policy === "KEEP"
+                ? t("不自动轮换")
+                : formatGoDuration(platform.rotation_interval || platform.sticky_ttl, t("默认"));
 
             return (
               <button
@@ -201,8 +210,16 @@ export function PlatformPage() {
                     <strong>{regexCount}</strong>
                   </span>
                   <span className="platform-fact">
-                    <span>{t("租约时长")}</span>
-                    <strong>{stickyTTL}</strong>
+                    <span>{t("轮换策略")}</span>
+                    <strong>{t(rotationPolicyLabel[platform.rotation_policy])}</strong>
+                  </span>
+                  <span className="platform-fact">
+                    <span>{t("轮换周期")}</span>
+                    <strong>{rotationInterval}</strong>
+                  </span>
+                  <span className="platform-fact">
+                    <span>{t("接入模式")}</span>
+                    <strong>{t(proxyAccessModeLabel[platform.proxy_access_mode])}</strong>
                   </span>
                 </div>
                 <div className="platform-tile-foot">
@@ -254,10 +271,59 @@ export function PlatformPage() {
               </div>
 
               <div className="field-group">
-                <label className="field-label" htmlFor="create-sticky">
-                  {t("租约保持时长（可选）")}
+                <input type="hidden" {...createForm.register("proxy_access_mode")} />
+                <label className="field-label" htmlFor="create-proxy-access-mode" style={{ visibility: "hidden" }}>
+                  {t("粘性代理模式")}
                 </label>
-                <Input id="create-sticky" placeholder={t("例如 168h")} {...createForm.register("sticky_ttl")} />
+                <div className="subscription-switch-item">
+                  <label className="subscription-switch-label" htmlFor="create-proxy-access-mode">
+                    <span>{t("粘性代理模式")}</span>
+                    <span className="muted">{t("开启后默认导出 Platform.Account 的粘性代理地址。")}</span>
+                  </label>
+                  <Switch
+                    id="create-proxy-access-mode"
+                    checked={createProxyAccessMode === "STICKY"}
+                    onChange={(event) => {
+                      createForm.setValue("proxy_access_mode", event.target.checked ? "STICKY" : "STANDARD", {
+                        shouldDirty: true,
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-rotation-policy">
+                  {t("轮换策略")}
+                </label>
+                <Select id="create-rotation-policy" {...createForm.register("rotation_policy")}>
+                  {rotationPolicies.map((item) => (
+                    <option key={item} value={item}>
+                      {t(rotationPolicyLabel[item])}
+                    </option>
+                  ))}
+                </Select>
+                <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                  {createRotationPolicy === "KEEP"
+                    ? t("保持当前出口，直到故障或手动切换。")
+                    : t("到达轮换周期后，下次请求会重新分配出口。")}
+                </p>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-rotation-interval">
+                  {t("轮换周期")}
+                </label>
+                <Input
+                  id="create-rotation-interval"
+                  placeholder={t("例如 2m / 30m / 2h")}
+                  disabled={createRotationPolicy !== "TTL"}
+                  invalid={Boolean(createForm.formState.errors.rotation_interval)}
+                  {...createForm.register("rotation_interval")}
+                />
+                {createForm.formState.errors.rotation_interval?.message ? (
+                  <p className="field-error">{t(createForm.formState.errors.rotation_interval.message)}</p>
+                ) : null}
               </div>
 
               <div className="field-group">

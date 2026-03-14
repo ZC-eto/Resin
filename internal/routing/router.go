@@ -47,6 +47,11 @@ type RouterConfig struct {
 	NodeTagResolver func(node.Hash) string
 }
 
+type RouteOptions struct {
+	ForceRotate bool
+	RotateSource string
+}
+
 func NewRouter(cfg RouterConfig) *Router {
 	return &Router{
 		pool:            cfg.Pool,
@@ -59,12 +64,18 @@ func NewRouter(cfg RouterConfig) *Router {
 }
 
 type RouteResult struct {
-	PlatformID   string
-	PlatformName string
-	NodeHash     node.Hash
-	EgressIP     netip.Addr
-	NodeTag      string // display tag: "<Subscription>/<Tag>" (DESIGN.md §601)
-	LeaseCreated bool
+	PlatformID       string
+	PlatformName     string
+	NodeHash         node.Hash
+	EgressIP         netip.Addr
+	NodeTag          string // display tag: "<Subscription>/<Tag>" (DESIGN.md §601)
+	LeaseCreated     bool
+	AccessMode       string
+	LeaseAction      string
+	RotateRequested  bool
+	RotateApplied    bool
+	RotateSource     string
+	PreviousEgressIP netip.Addr
 }
 
 const livePickAttempts = 2 // first pick + one retry
@@ -78,6 +89,10 @@ const (
 )
 
 func (r *Router) RouteRequest(platName, account, target string) (RouteResult, error) {
+	return r.RouteRequestWithOptions(platName, account, target, RouteOptions{})
+}
+
+func (r *Router) RouteRequestWithOptions(platName, account, target string, opts RouteOptions) (RouteResult, error) {
 	plat, err := r.resolvePlatform(platName)
 	if err != nil {
 		return RouteResult{}, err
@@ -89,7 +104,7 @@ func (r *Router) RouteRequest(platName, account, target string) (RouteResult, er
 	if account == "" {
 		result, err = r.routeRandom(plat, state, targetDomain)
 	} else {
-		result, err = r.routeSticky(plat, state, account, targetDomain, time.Now())
+		result, err = r.routeSticky(plat, state, account, targetDomain, time.Now(), opts)
 	}
 	if err != nil {
 		return RouteResult{}, err
@@ -141,6 +156,8 @@ func (r *Router) routeRandom(
 		NodeHash:     h,
 		EgressIP:     entry.GetEgressIP(),
 		LeaseCreated: false,
+		AccessMode:   string(platform.ProxyAccessModeStandard),
+		LeaseAction:  string(RouteActionRandomAssign),
 	}, nil
 }
 
@@ -150,6 +167,7 @@ func (r *Router) routeSticky(
 	account string,
 	targetDomain string,
 	now time.Time,
+	opts RouteOptions,
 ) (RouteResult, error) {
 	nowNs := now.UnixNano()
 	var result RouteResult
@@ -163,6 +181,7 @@ func (r *Router) routeSticky(
 			targetDomain,
 			now,
 			nowNs,
+			opts,
 			current,
 			loaded,
 		)
@@ -184,11 +203,13 @@ func (r *Router) decideStickyLease(
 	targetDomain string,
 	now time.Time,
 	nowNs int64,
+	opts RouteOptions,
 	current Lease,
 	loaded bool,
 ) (Lease, xsync.ComputeOp, RouteResult, error) {
 	hadPreviousLease := loaded
 	invalidation := leaseInvalidationNone
+	pendingIntent, hasPendingIntent := state.PendingRotations.Load(account)
 
 	if loaded && current.IsExpired(now) {
 		invalidation = leaseInvalidationExpire
@@ -196,7 +217,20 @@ func (r *Router) decideStickyLease(
 	}
 
 	if loaded {
+		if opts.ForceRotate {
+			if newLease, rotatedResult, ok := r.tryLeaseForcedRotation(plat, state, account, current, targetDomain, nowNs); ok {
+				rotatedResult.RotateRequested = true
+				rotatedResult.RotateApplied = true
+				rotatedResult.RotateSource = string(normalizeRotateSource(opts.RotateSource))
+				return newLease, xsync.UpdateOp, rotatedResult, nil
+			}
+		}
 		if newLease, hitResult, ok := r.tryLeaseHit(plat, account, current, nowNs); ok {
+			if opts.ForceRotate {
+				hitResult.RotateRequested = true
+				hitResult.RotateSource = string(normalizeRotateSource(opts.RotateSource))
+				hitResult.PreviousEgressIP = current.EgressIP
+			}
 			return newLease, xsync.UpdateOp, hitResult, nil
 		}
 		if newLease, rotatedResult, ok := r.tryLeaseSameIPRotation(plat, account, current, targetDomain, nowNs); ok {
@@ -215,6 +249,8 @@ func (r *Router) decideStickyLease(
 		current,
 		hadPreviousLease,
 		invalidation,
+		pendingIntent,
+		hasPendingIntent,
 	)
 }
 
@@ -228,12 +264,17 @@ func (r *Router) createOrAbortStickyLease(
 	previous Lease,
 	hadPreviousLease bool,
 	invalidation leaseInvalidationReason,
+	pendingIntent RotateIntent,
+	hasPendingIntent bool,
 ) (Lease, xsync.ComputeOp, RouteResult, error) {
 	newLease, createdResult, err := r.createLease(plat, state, targetDomain, now, nowNs)
 	if err != nil {
 		r.cleanupPreviousLease(state, previous, hadPreviousLease, invalidation, plat.ID, account)
 		lease, op := abortLeaseCreate(previous, hadPreviousLease)
 		return lease, op, RouteResult{}, err
+	}
+	if hadPreviousLease && newLease.ExpiryNs <= previous.ExpiryNs {
+		newLease.ExpiryNs = previous.ExpiryNs + 1
 	}
 
 	r.cleanupPreviousLease(state, previous, hadPreviousLease, invalidation, plat.ID, account)
@@ -245,6 +286,24 @@ func (r *Router) createOrAbortStickyLease(
 		NodeHash:   newLease.NodeHash,
 		EgressIP:   newLease.EgressIP,
 	})
+	if hasPendingIntent {
+		state.PendingRotations.Delete(account)
+		createdResult.LeaseAction = string(RouteActionManualRotateReassign)
+		createdResult.RotateRequested = true
+		createdResult.RotateApplied = true
+		createdResult.RotateSource = string(pendingIntent.Source)
+		createdResult.PreviousEgressIP = pendingIntent.PreviousEgressIP
+	} else if hadPreviousLease {
+		createdResult.PreviousEgressIP = previous.EgressIP
+		switch invalidation {
+		case leaseInvalidationExpire:
+			createdResult.LeaseAction = string(RouteActionTTLReassign)
+			createdResult.RotateSource = string(RotateSourceTTLExpired)
+		case leaseInvalidationRemove:
+			createdResult.LeaseAction = string(RouteActionPlatformReassign)
+			createdResult.RotateSource = string(RotateSourceLeaseInvalid)
+		}
+	}
 	return newLease, xsync.UpdateOp, createdResult, nil
 }
 
@@ -272,6 +331,8 @@ func (r *Router) tryLeaseHit(
 		NodeHash:     current.NodeHash,
 		EgressIP:     current.EgressIP,
 		LeaseCreated: false,
+		AccessMode:   string(platform.ProxyAccessModeSticky),
+		LeaseAction:  string(RouteActionLeaseReuse),
 	}, true
 }
 
@@ -305,9 +366,60 @@ func (r *Router) tryLeaseSameIPRotation(
 		EgressIP:   current.EgressIP,
 	})
 	return newLease, RouteResult{
-		NodeHash:     bestHash,
-		EgressIP:     current.EgressIP,
-		LeaseCreated: false,
+		NodeHash:         bestHash,
+		EgressIP:         current.EgressIP,
+		LeaseCreated:     false,
+		AccessMode:       string(platform.ProxyAccessModeSticky),
+		LeaseAction:      string(RouteActionSameIPFailover),
+		PreviousEgressIP: current.EgressIP,
+	}, true
+}
+
+func (r *Router) tryLeaseForcedRotation(
+	plat *platform.Platform,
+	state *PlatformRoutingState,
+	account string,
+	current Lease,
+	targetDomain string,
+	nowNs int64,
+) (Lease, RouteResult, bool) {
+	bestHash, entry, ok := chooseAlternativeEgressCandidate(
+		plat,
+		state.IPLoadStats,
+		r.pool,
+		current.EgressIP,
+		targetDomain,
+		r.authorities(),
+		r.p2cWindow(),
+	)
+	if !ok || entry == nil {
+		return Lease{}, RouteResult{}, false
+	}
+
+	nextIP := entry.GetEgressIP()
+	if nextIP.IsValid() && nextIP != current.EgressIP {
+		state.IPLoadStats.Dec(current.EgressIP)
+		state.IPLoadStats.Inc(nextIP)
+	}
+
+	newLease := current
+	newLease.NodeHash = bestHash
+	newLease.EgressIP = nextIP
+	newLease.LastAccessedNs = nowNs
+	r.emitLeaseEvent(LeaseEvent{
+		Type:       LeaseReplace,
+		PlatformID: plat.ID,
+		Account:    account,
+		NodeHash:   bestHash,
+		EgressIP:   nextIP,
+	})
+	return newLease, RouteResult{
+		NodeHash:         bestHash,
+		EgressIP:         nextIP,
+		LeaseCreated:     false,
+		AccessMode:       string(platform.ProxyAccessModeSticky),
+		LeaseAction:      string(RouteActionForcedRotate),
+		PreviousEgressIP: current.EgressIP,
 	}, true
 }
 
@@ -322,22 +434,29 @@ func (r *Router) createLease(
 	if err != nil {
 		return Lease{}, RouteResult{}, err
 	}
-	ttl := plat.StickyTTLNs
-	if ttl <= 0 {
-		ttl = int64(24 * time.Hour) // Default safeguard
+	rotationPolicy := platform.EffectiveRotationPolicy(string(plat.RotationPolicy), plat.RotationIntervalNs, plat.StickyTTLNs)
+	rotationInterval := platform.EffectiveRotationIntervalNs(plat.RotationIntervalNs, plat.StickyTTLNs)
+	expiryNs := int64(math.MaxInt64)
+	if rotationPolicy == platform.RotationPolicyTTL {
+		if rotationInterval <= 0 {
+			return Lease{}, RouteResult{}, fmt.Errorf("platform %s has invalid rotation interval", plat.ID)
+		}
+		expiryNs = now.Add(time.Duration(rotationInterval)).UnixNano()
 	}
 
 	lease := Lease{
 		NodeHash:       h,
 		EgressIP:       entry.GetEgressIP(),
 		CreatedAtNs:    nowNs,
-		ExpiryNs:       now.Add(time.Duration(ttl)).UnixNano(),
+		ExpiryNs:       expiryNs,
 		LastAccessedNs: nowNs,
 	}
 	return lease, RouteResult{
 		NodeHash:     lease.NodeHash,
 		EgressIP:     lease.EgressIP,
 		LeaseCreated: true,
+		AccessMode:   string(platform.ProxyAccessModeSticky),
+		LeaseAction:  string(RouteActionLeaseCreate),
 	}, nil
 }
 
@@ -464,6 +583,45 @@ func sameIPCandidateLatency(
 		return latency, true
 	}
 	return 0, false
+}
+
+func chooseAlternativeEgressCandidate(
+	plat *platform.Platform,
+	stats *IPLoadStats,
+	pool PoolAccessor,
+	excludedIP netip.Addr,
+	targetDomain string,
+	authorities []string,
+	window time.Duration,
+) (node.Hash, *node.NodeEntry, bool) {
+	bestHash := node.Zero
+	var bestEntry *node.NodeEntry
+	bestScore := math.MaxFloat64
+
+	plat.View().Range(func(h node.Hash) bool {
+		entry, ok := pool.GetEntry(h)
+		if !ok || entry == nil {
+			return true
+		}
+		egressIP := entry.GetEgressIP()
+		if !egressIP.IsValid() || egressIP == excludedIP {
+			return true
+		}
+
+		latency, hasLatency := sameIPCandidateLatency(entry, targetDomain, authorities, window)
+		if !hasLatency {
+			latency = 0
+		}
+		score := calculateScore(h, latency, plat, stats, pool)
+		if bestEntry == nil || score < bestScore {
+			bestHash = h
+			bestEntry = entry
+			bestScore = score
+		}
+		return true
+	})
+
+	return bestHash, bestEntry, bestEntry != nil
 }
 
 // ReadLease implements weak persistence read.
@@ -593,10 +751,37 @@ func (r *Router) DeleteLease(platformID, account string) bool {
 	if !ok {
 		return false
 	}
+	state.PendingRotations.Delete(account)
 	lease, deleted := state.Leases.DeleteLease(account)
 	if !deleted {
 		return false
 	}
+	r.emitLeaseEvent(LeaseEvent{
+		Type:        LeaseRemove,
+		PlatformID:  platformID,
+		Account:     account,
+		NodeHash:    lease.NodeHash,
+		EgressIP:    lease.EgressIP,
+		CreatedAtNs: lease.CreatedAtNs,
+	})
+	return true
+}
+
+func (r *Router) RotateLease(platformID, account string, source RotateSource) bool {
+	state, ok := r.states.Load(platformID)
+	if !ok {
+		return false
+	}
+	lease, deleted := state.Leases.DeleteLease(account)
+	if !deleted {
+		return false
+	}
+	state.PendingRotations.Store(account, RotateIntent{
+		Source:           normalizeRotateSource(string(source)),
+		PreviousNodeHash: lease.NodeHash,
+		PreviousEgressIP: lease.EgressIP,
+		RequestedAtNs:    time.Now().UnixNano(),
+	})
 	r.emitLeaseEvent(LeaseEvent{
 		Type:        LeaseRemove,
 		PlatformID:  platformID,
@@ -617,6 +802,7 @@ func (r *Router) DeleteAllLeases(platformID string) int {
 	}
 	count := 0
 	state.Leases.Range(func(account string, _ Lease) bool {
+		state.PendingRotations.Delete(account)
 		removed, deleted := state.Leases.DeleteLease(account)
 		if deleted {
 			r.emitLeaseEvent(LeaseEvent{

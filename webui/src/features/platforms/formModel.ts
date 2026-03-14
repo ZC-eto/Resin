@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { allocationPolicies, emptyAccountBehaviors, missActions } from "./constants";
+import { allocationPolicies, emptyAccountBehaviors, missActions, proxyAccessModes, rotationPolicies } from "./constants";
 import { parseHeaderLines, parseLinesToList } from "./formParsers";
 import type { Platform, PlatformCreateInput, PlatformUpdateInput } from "./types";
 
@@ -30,7 +30,9 @@ export const platformFormSchema = z.object({
     .refine((value) => value.toLowerCase() !== platformNameReserved, {
       message: "平台名称不能为保留字",
     }),
-  sticky_ttl: z.string().optional(),
+  proxy_access_mode: z.enum(proxyAccessModes),
+  rotation_policy: z.enum(rotationPolicies),
+  rotation_interval: z.string().optional(),
   regex_filters_text: z.string().optional(),
   region_filters_text: z.string().optional(),
   reverse_proxy_miss_action: z.enum(missActions),
@@ -38,6 +40,13 @@ export const platformFormSchema = z.object({
   reverse_proxy_fixed_account_header: z.string().optional(),
   allocation_policy: z.enum(allocationPolicies),
 }).superRefine((value, ctx) => {
+  if (value.rotation_policy === "TTL" && !(value.rotation_interval?.trim())) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["rotation_interval"],
+      message: "按时间轮换时必须填写轮换周期",
+    });
+  }
   if (
     value.reverse_proxy_empty_account_behavior === "FIXED_HEADER" &&
     parseHeaderLines(value.reverse_proxy_fixed_account_header).length === 0
@@ -54,7 +63,9 @@ export type PlatformFormValues = z.infer<typeof platformFormSchema>;
 
 export const defaultPlatformFormValues: PlatformFormValues = {
   name: "",
-  sticky_ttl: "",
+  proxy_access_mode: "STANDARD",
+  rotation_policy: "KEEP",
+  rotation_interval: "",
   regex_filters_text: "",
   region_filters_text: "",
   reverse_proxy_miss_action: "TREAT_AS_EMPTY",
@@ -69,7 +80,9 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
 
   return {
     name: platform.name,
-    sticky_ttl: platform.sticky_ttl,
+    proxy_access_mode: platform.proxy_access_mode,
+    rotation_policy: platform.rotation_policy,
+    rotation_interval: platform.rotation_interval || platform.sticky_ttl,
     regex_filters_text: regexFilters.join("\n"),
     region_filters_text: regionFilters.join("\n"),
     reverse_proxy_miss_action: platform.reverse_proxy_miss_action,
@@ -82,6 +95,8 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
 function toPlatformPayloadBase(values: PlatformFormValues) {
   return {
     name: values.name.trim(),
+    proxy_access_mode: values.proxy_access_mode,
+    rotation_policy: values.rotation_policy,
     regex_filters: parseLinesToList(values.regex_filters_text),
     region_filters: parseLinesToList(values.region_filters_text, (value) => value.toLowerCase()),
     reverse_proxy_miss_action: values.reverse_proxy_miss_action,
@@ -94,13 +109,13 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
 export function toPlatformCreateInput(values: PlatformFormValues): PlatformCreateInput {
   return {
     ...toPlatformPayloadBase(values),
-    sticky_ttl: values.sticky_ttl?.trim() || undefined,
+    rotation_interval: values.rotation_policy === "TTL" ? values.rotation_interval?.trim() || undefined : undefined,
   };
 }
 
 export function toPlatformUpdateInput(values: PlatformFormValues): PlatformUpdateInput {
   return {
     ...toPlatformPayloadBase(values),
-    sticky_ttl: values.sticky_ttl?.trim() || "",
+    rotation_interval: values.rotation_policy === "TTL" ? values.rotation_interval?.trim() || "" : undefined,
   };
 }

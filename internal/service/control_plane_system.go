@@ -93,6 +93,9 @@ var runtimeConfigAllowedFields = map[string]bool{
 var platformPatchAllowedFields = map[string]bool{
 	"name":                                 true,
 	"sticky_ttl":                           true,
+	"proxy_access_mode":                    true,
+	"rotation_policy":                      true,
+	"rotation_interval":                    true,
 	"regex_filters":                        true,
 	"region_filters":                       true,
 	"reverse_proxy_miss_action":            true,

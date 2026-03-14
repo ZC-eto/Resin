@@ -6,11 +6,17 @@ export type RequestLogItem = {
   platform_id: string;
   platform_name: string;
   account: string;
+  access_mode: string;
+  lease_action: string;
+  rotate_requested: boolean;
+  rotate_applied: boolean;
+  rotate_source: string;
   target_host: string;
   target_url: string;
   node_hash: string;
   node_tag: string;
   egress_ip: string;
+  previous_egress_ip: string;
   duration_ms: number;
   net_ok: boolean;
   http_method: string;

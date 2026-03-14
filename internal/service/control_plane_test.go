@@ -468,9 +468,19 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 
 	name := "new-platform"
-	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name})
+	accessMode := "STICKY"
+	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name, ProxyAccessMode: &accessMode})
 	if err != nil {
 		t.Fatalf("CreatePlatform: %v", err)
+	}
+	if created.ProxyAccessMode != accessMode {
+		t.Fatalf("proxy_access_mode = %q, want %q", created.ProxyAccessMode, accessMode)
+	}
+	if created.RotationPolicy != string(platform.RotationPolicyTTL) {
+		t.Fatalf("rotation_policy = %q, want %q", created.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if created.RotationInterval != (30 * time.Minute).String() {
+		t.Fatalf("rotation_interval = %q, want %q", created.RotationInterval, (30 * time.Minute).String())
 	}
 
 	plat, ok := pool.GetPlatform(created.ID)
@@ -482,6 +492,12 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 	if !plat.View().Contains(hash) {
 		t.Fatalf("new platform view should contain seeded hash %s", hash.Hex())
+	}
+	if plat.RotationPolicy != platform.RotationPolicyTTL {
+		t.Fatalf("pool rotation_policy = %q, want %q", plat.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if plat.RotationIntervalNs != int64(30*time.Minute) {
+		t.Fatalf("pool rotation_interval_ns = %d, want %d", plat.RotationIntervalNs, int64(30*time.Minute))
 	}
 }
 
@@ -535,6 +551,63 @@ func TestCreatePlatform_RejectsReservedAPIName(t *testing.T) {
 	}
 	if !strings.Contains(svcErr.Message, "name:") || !strings.Contains(svcErr.Message, "reserved") {
 		t.Fatalf("service error message = %q, expected reserved-name hint", svcErr.Message)
+	}
+}
+
+func TestCreatePlatform_KeepRotationAcceptsZeroInterval(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		SubMgr: subMgr,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              30 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+	}
+
+	name := "keep-platform"
+	rotationPolicy := "KEEP"
+	rotationInterval := "0s"
+	created, err := cp.CreatePlatform(CreatePlatformRequest{
+		Name:             &name,
+		RotationPolicy:   &rotationPolicy,
+		RotationInterval: &rotationInterval,
+	})
+	if err != nil {
+		t.Fatalf("CreatePlatform KEEP 0s: %v", err)
+	}
+	if created.RotationPolicy != string(platform.RotationPolicyKeep) {
+		t.Fatalf("rotation_policy = %q, want %q", created.RotationPolicy, platform.RotationPolicyKeep)
+	}
+	if created.RotationInterval != "" {
+		t.Fatalf("rotation_interval = %q, want empty", created.RotationInterval)
+	}
+	if created.StickyTTL != "" {
+		t.Fatalf("sticky_ttl = %q, want empty", created.StickyTTL)
 	}
 }
 
@@ -836,6 +909,8 @@ func TestDeletePlatform_DoesNotDecodeCorruptPersistedFiltersJSON(t *testing.T) {
 		nil,
 		nil,
 		platformRow.StickyTTLNs,
+		string(platform.RotationPolicyTTL),
+		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
 		"",
@@ -898,6 +973,8 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		nil,
 		nil,
 		defaultRow.StickyTTLNs,
+		string(platform.RotationPolicyTTL),
+		defaultRow.StickyTTLNs,
 		defaultRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
 		"",
@@ -929,6 +1006,12 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	if resp.StickyTTL != (45 * time.Minute).String() {
 		t.Fatalf("response sticky_ttl = %q, want %q", resp.StickyTTL, (45 * time.Minute).String())
 	}
+	if resp.RotationPolicy != string(platform.RotationPolicyTTL) {
+		t.Fatalf("response rotation_policy = %q, want %q", resp.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if resp.RotationInterval != (45 * time.Minute).String() {
+		t.Fatalf("response rotation_interval = %q, want %q", resp.RotationInterval, (45 * time.Minute).String())
+	}
 	if !reflect.DeepEqual(resp.RegexFilters, []string{"^prod-"}) {
 		t.Fatalf("response regex_filters = %v, want %v", resp.RegexFilters, []string{"^prod-"})
 	}
@@ -952,6 +1035,12 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	if stored.StickyTTLNs != int64(45*time.Minute) {
 		t.Fatalf("stored sticky_ttl_ns = %d, want %d", stored.StickyTTLNs, int64(45*time.Minute))
 	}
+	if stored.RotationPolicy != string(platform.RotationPolicyTTL) {
+		t.Fatalf("stored rotation_policy = %q, want %q", stored.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if stored.RotationIntervalNs != int64(45*time.Minute) {
+		t.Fatalf("stored rotation_interval_ns = %d, want %d", stored.RotationIntervalNs, int64(45*time.Minute))
+	}
 	if !reflect.DeepEqual(stored.RegexFilters, []string{"^prod-"}) {
 		t.Fatalf("stored regex_filters = %v, want %v", stored.RegexFilters, []string{"^prod-"})
 	}
@@ -974,6 +1063,12 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	}
 	if plat.StickyTTLNs != int64(45*time.Minute) {
 		t.Fatalf("pool sticky_ttl_ns = %d, want %d", plat.StickyTTLNs, int64(45*time.Minute))
+	}
+	if plat.RotationPolicy != platform.RotationPolicyTTL {
+		t.Fatalf("pool rotation_policy = %q, want %q", plat.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if plat.RotationIntervalNs != int64(45*time.Minute) {
+		t.Fatalf("pool rotation_interval_ns = %d, want %d", plat.RotationIntervalNs, int64(45*time.Minute))
 	}
 	if len(plat.RegexFilters) != 1 || plat.RegexFilters[0].String() != "^prod-" {
 		t.Fatalf("pool regex_filters = %v, want [%q]", plat.RegexFilters, "^prod-")
@@ -1039,6 +1134,8 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 		nil,
 		nil,
 		platformRow.StickyTTLNs,
+		string(platform.RotationPolicyTTL),
+		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
 		"",
@@ -1066,6 +1163,12 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 	}
 	if resp.StickyTTL != (45 * time.Minute).String() {
 		t.Fatalf("response sticky_ttl = %q, want %q", resp.StickyTTL, (45 * time.Minute).String())
+	}
+	if resp.RotationPolicy != string(platform.RotationPolicyTTL) {
+		t.Fatalf("response rotation_policy = %q, want %q", resp.RotationPolicy, platform.RotationPolicyTTL)
+	}
+	if resp.RotationInterval != (45 * time.Minute).String() {
+		t.Fatalf("response rotation_interval = %q, want %q", resp.RotationInterval, (45 * time.Minute).String())
 	}
 	if !reflect.DeepEqual(resp.RegexFilters, []string{"^prod-"}) {
 		t.Fatalf("response regex_filters = %v, want %v", resp.RegexFilters, []string{"^prod-"})

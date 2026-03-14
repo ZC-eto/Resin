@@ -1,0 +1,2 @@
+ALTER TABLE platforms
+ADD COLUMN proxy_access_mode TEXT NOT NULL DEFAULT 'STANDARD';

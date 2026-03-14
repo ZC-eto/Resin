@@ -182,3 +182,57 @@ func TestTokenActionInheritLease_InvalidArguments(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "INVALID_ARGUMENT")
 }
+
+func TestTokenActionRotateLease_Success(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+	platformName := "token-rotate-target"
+	platformID := mustCreatePlatform(t, srv, platformName)
+
+	nowNs := time.Now().UnixNano()
+	lease := model.Lease{
+		PlatformID:     platformID,
+		Account:        "rotate-me",
+		NodeHash:       node.HashFromRawOptions([]byte(`{"id":"token-rotate-node"}`)).Hex(),
+		EgressIP:       "203.0.113.40",
+		CreatedAtNs:    nowNs - int64(10*time.Minute),
+		ExpiryNs:       nowNs + int64(30*time.Minute),
+		LastAccessedNs: nowNs - int64(time.Minute),
+	}
+	if err := cp.Router.UpsertLease(lease); err != nil {
+		t.Fatalf("seed rotate lease: %v", err)
+	}
+
+	handler := NewTokenActionHandler("tok", cp, 1<<20)
+	rec := doTokenJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tok/api/v1/"+platformName+"/actions/rotate-lease",
+		map[string]any{"account": "rotate-me"},
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := cp.Router.ReadLease(model.LeaseKey{PlatformID: platformID, Account: "rotate-me"}); got != nil {
+		t.Fatal("expected rotate action to remove lease")
+	}
+}
+
+func TestTokenActionRotateLease_InvalidArguments(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+	platformName := "token-rotate-invalid"
+	_ = mustCreatePlatform(t, srv, platformName)
+
+	handler := NewTokenActionHandler("tok", cp, 1<<20)
+	rec := doTokenJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tok/api/v1/"+platformName+"/actions/rotate-lease",
+		map[string]any{"account": "   ", "extra": "unexpected"},
+	)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+}

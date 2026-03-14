@@ -9,6 +9,10 @@ import (
 	"github.com/Resinat/Resin/internal/service"
 )
 
+type rotatePlatformLeaseRequest struct {
+	Account string `json:"account"`
+}
+
 func platformMatchesKeyword(p service.PlatformResponse, keyword string) bool {
 	contains := func(v string) bool {
 		return strings.Contains(strings.ToLower(v), keyword)
@@ -191,6 +195,27 @@ func HandleRebuildPlatform(cp *service.ControlPlaneService) http.HandlerFunc {
 			return
 		}
 		if err := cp.RebuildPlatformView(id); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// HandleRotatePlatformLease returns a handler for POST /api/v1/platforms/{id}/actions/rotate-lease.
+func HandleRotatePlatformLease(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := requireUUIDPathParam(w, r, "id", "platform_id")
+		if !ok {
+			return
+		}
+
+		var req rotatePlatformLeaseRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+		if err := cp.RotateLease(id, req.Account); err != nil {
 			writeServiceError(w, err)
 			return
 		}

@@ -233,6 +233,45 @@ func TestReverseProxy_E2ESuccess(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_E2ERotateHeaderIsStripped(t *testing.T) {
+	env := newProxyE2EEnv(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(resinRotateHeader); got != "" {
+			t.Fatalf("%s should be stripped, got %q", resinRotateHeader, got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("reverse-rotate-ok"))
+	}))
+	defer upstream.Close()
+
+	host := strings.TrimPrefix(upstream.URL, "http://")
+	path := fmt.Sprintf("/tok/plat:acct/http/%s/rotate", host)
+
+	rp := NewReverseProxy(ReverseProxyConfig{
+		ProxyToken:     "tok",
+		Router:         env.router,
+		Pool:           env.pool,
+		PlatformLookup: env.pool,
+		Health:         &mockHealthRecorder{},
+		Events:         NoOpEventEmitter{},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set(resinRotateHeader, "true")
+	w := httptest.NewRecorder()
+
+	rp.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d (body=%q, resinErr=%q)",
+			w.Code, http.StatusOK, w.Body.String(), w.Header().Get("X-Resin-Error"))
+	}
+	if got := w.Body.String(); got != "reverse-rotate-ok" {
+		t.Fatalf("body: got %q, want %q", got, "reverse-rotate-ok")
+	}
+}
+
 func TestReverseProxy_E2EClientCanceledBeforeResponse(t *testing.T) {
 	env := newProxyE2EEnv(t)
 	emitter := newMockEventEmitter()

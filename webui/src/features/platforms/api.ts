@@ -12,6 +12,20 @@ type ApiPlatform = Omit<Platform, "regex_filters" | "region_filters"> & {
   reverse_proxy_fixed_account_header?: string | null;
 };
 
+function parseProxyAccessMode(raw: ApiPlatform["proxy_access_mode"]): Platform["proxy_access_mode"] {
+  if (raw === "STANDARD" || raw === "STICKY") {
+    return raw;
+  }
+  return "STANDARD";
+}
+
+function parseRotationPolicy(raw: ApiPlatform["rotation_policy"], stickyTTL: string): Platform["rotation_policy"] {
+  if (raw === "KEEP" || raw === "TTL") {
+    return raw;
+  }
+  return stickyTTL ? "TTL" : "KEEP";
+}
+
 function parseMissAction(raw: ApiPlatform["reverse_proxy_miss_action"]): Platform["reverse_proxy_miss_action"] {
   if (raw === "TREAT_AS_EMPTY" || raw === "REJECT") {
     return raw;
@@ -20,8 +34,14 @@ function parseMissAction(raw: ApiPlatform["reverse_proxy_miss_action"]): Platfor
 }
 
 function normalizePlatform(raw: ApiPlatform): Platform {
+  const stickyTTL = typeof raw.sticky_ttl === "string" ? raw.sticky_ttl : "";
+  const rotationInterval = typeof raw.rotation_interval === "string" ? raw.rotation_interval : stickyTTL;
   return {
     ...raw,
+    sticky_ttl: stickyTTL,
+    proxy_access_mode: parseProxyAccessMode(raw.proxy_access_mode),
+    rotation_policy: parseRotationPolicy(raw.rotation_policy, stickyTTL),
+    rotation_interval: rotationInterval,
     reverse_proxy_miss_action: parseMissAction(raw.reverse_proxy_miss_action),
     regex_filters: Array.isArray(raw.regex_filters) ? raw.regex_filters : [],
     region_filters: Array.isArray(raw.region_filters) ? raw.region_filters : [],
@@ -109,5 +129,12 @@ export async function rebuildPlatform(id: string): Promise<void> {
 export async function clearAllPlatformLeases(id: string): Promise<void> {
   await apiRequest<void>(`${basePath}/${id}/leases`, {
     method: "DELETE",
+  });
+}
+
+export async function rotatePlatformLease(id: string, account: string): Promise<void> {
+  await apiRequest<{ status: "ok" }>(`${basePath}/${id}/actions/rotate-lease`, {
+    method: "POST",
+    body: { account },
   });
 }

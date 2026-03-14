@@ -25,6 +25,9 @@ type PlatformResponse struct {
 	ID                               string   `json:"id"`
 	Name                             string   `json:"name"`
 	StickyTTL                        string   `json:"sticky_ttl"`
+	ProxyAccessMode                  string   `json:"proxy_access_mode"`
+	RotationPolicy                   string   `json:"rotation_policy"`
+	RotationInterval                 string   `json:"rotation_interval"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
 	RoutableNodeCount                int      `json:"routable_node_count"`
@@ -38,10 +41,23 @@ type PlatformResponse struct {
 func platformToResponse(p model.Platform) PlatformResponse {
 	behavior := normalizePlatformEmptyAccountBehavior(p.ReverseProxyEmptyAccountBehavior)
 	fixedHeader := normalizeHeaderFieldName(p.ReverseProxyFixedAccountHeader)
+	accessMode := platform.NormalizeProxyAccessMode(p.ProxyAccessMode)
+	if !accessMode.IsValid() {
+		accessMode = platform.ProxyAccessModeStandard
+	}
+	rotationPolicy := platform.EffectiveRotationPolicy(p.RotationPolicy, p.RotationIntervalNs, p.StickyTTLNs)
+	rotationInterval := platform.EffectiveRotationIntervalNs(p.RotationIntervalNs, p.StickyTTLNs)
+	stickyTTL := ""
+	if rotationPolicy == platform.RotationPolicyTTL && rotationInterval > 0 {
+		stickyTTL = time.Duration(rotationInterval).String()
+	}
 	return PlatformResponse{
 		ID:                               p.ID,
 		Name:                             p.Name,
-		StickyTTL:                        time.Duration(p.StickyTTLNs).String(),
+		StickyTTL:                        stickyTTL,
+		ProxyAccessMode:                  string(accessMode),
+		RotationPolicy:                   string(rotationPolicy),
+		RotationInterval:                 stickyTTL,
 		RegexFilters:                     append([]string(nil), p.RegexFilters...),
 		RegionFilters:                    append([]string(nil), p.RegionFilters...),
 		RoutableNodeCount:                0,
@@ -68,6 +84,9 @@ func (s *ControlPlaneService) withRoutableNodeCount(resp PlatformResponse) Platf
 type platformConfig struct {
 	Name                             string
 	StickyTTLNs                      int64
+	ProxyAccessMode                  string
+	RotationPolicy                   string
+	RotationIntervalNs               int64
 	RegexFilters                     []string
 	RegionFilters                    []string
 	ReverseProxyMissAction           string
@@ -95,6 +114,9 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 	return platformConfig{
 		Name:                   name,
 		StickyTTLNs:            int64(s.EnvCfg.DefaultPlatformStickyTTL),
+		ProxyAccessMode:        string(platform.ProxyAccessModeStandard),
+		RotationPolicy:         string(platform.RotationPolicyTTL),
+		RotationIntervalNs:     int64(s.EnvCfg.DefaultPlatformStickyTTL),
 		RegexFilters:           append([]string(nil), s.EnvCfg.DefaultPlatformRegexFilters...),
 		RegionFilters:          append([]string(nil), s.EnvCfg.DefaultPlatformRegionFilters...),
 		ReverseProxyMissAction: s.EnvCfg.DefaultPlatformReverseProxyMissAction,
@@ -109,9 +131,16 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 }
 
 func platformConfigFromModel(mp model.Platform) platformConfig {
+	accessMode := platform.NormalizeProxyAccessMode(mp.ProxyAccessMode)
+	if !accessMode.IsValid() {
+		accessMode = platform.ProxyAccessModeStandard
+	}
 	return platformConfig{
 		Name:                             mp.Name,
 		StickyTTLNs:                      mp.StickyTTLNs,
+		ProxyAccessMode:                  string(accessMode),
+		RotationPolicy:                   string(platform.EffectiveRotationPolicy(mp.RotationPolicy, mp.RotationIntervalNs, mp.StickyTTLNs)),
+		RotationIntervalNs:               platform.EffectiveRotationIntervalNs(mp.RotationIntervalNs, mp.StickyTTLNs),
 		RegexFilters:                     append([]string(nil), mp.RegexFilters...),
 		RegionFilters:                    append([]string(nil), mp.RegionFilters...),
 		ReverseProxyMissAction:           mp.ReverseProxyMissAction,
@@ -125,7 +154,10 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 	return model.Platform{
 		ID:                               id,
 		Name:                             cfg.Name,
-		StickyTTLNs:                      cfg.StickyTTLNs,
+		StickyTTLNs:                      cfg.RotationIntervalNs,
+		ProxyAccessMode:                  string(platform.NormalizeProxyAccessMode(cfg.ProxyAccessMode)),
+		RotationPolicy:                   string(platform.EffectiveRotationPolicy(cfg.RotationPolicy, cfg.RotationIntervalNs, cfg.StickyTTLNs)),
+		RotationIntervalNs:               cfg.RotationIntervalNs,
 		RegexFilters:                     append([]string(nil), cfg.RegexFilters...),
 		RegionFilters:                    append([]string(nil), cfg.RegionFilters...),
 		ReverseProxyMissAction:           cfg.ReverseProxyMissAction,
@@ -147,6 +179,8 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		compiledRegexFilters,
 		cfg.RegionFilters,
 		cfg.StickyTTLNs,
+		cfg.RotationPolicy,
+		cfg.RotationIntervalNs,
 		cfg.ReverseProxyMissAction,
 		cfg.ReverseProxyEmptyAccountBehavior,
 		cfg.ReverseProxyFixedAccountHeader,
@@ -162,6 +196,17 @@ func validatePlatformMissAction(raw string) *ServiceError {
 		"reverse_proxy_miss_action: must be %s or %s",
 		platform.ReverseProxyMissActionTreatAsEmpty,
 		platform.ReverseProxyMissActionReject,
+	))
+}
+
+func validatePlatformProxyAccessMode(raw string) *ServiceError {
+	if platform.NormalizeProxyAccessMode(raw).IsValid() {
+		return nil
+	}
+	return invalidArg(fmt.Sprintf(
+		"proxy_access_mode: must be %s or %s",
+		platform.ProxyAccessModeStandard,
+		platform.ProxyAccessModeSticky,
 	))
 }
 
@@ -223,6 +268,54 @@ func setPlatformStickyTTL(cfg *platformConfig, d time.Duration) *ServiceError {
 		return invalidArg("sticky_ttl: must be > 0")
 	}
 	cfg.StickyTTLNs = int64(d)
+	cfg.RotationPolicy = string(platform.RotationPolicyTTL)
+	cfg.RotationIntervalNs = int64(d)
+	return nil
+}
+
+func setPlatformProxyAccessMode(cfg *platformConfig, accessMode string) *ServiceError {
+	if err := validatePlatformProxyAccessMode(accessMode); err != nil {
+		return err
+	}
+	cfg.ProxyAccessMode = string(platform.NormalizeProxyAccessMode(accessMode))
+	return nil
+}
+
+func validatePlatformRotationPolicy(raw string) *ServiceError {
+	if platform.NormalizeRotationPolicy(raw).IsValid() {
+		return nil
+	}
+	return invalidArg(fmt.Sprintf(
+		"rotation_policy: must be %s or %s",
+		platform.RotationPolicyKeep,
+		platform.RotationPolicyTTL,
+	))
+}
+
+func setPlatformRotationPolicy(cfg *platformConfig, raw string) *ServiceError {
+	if err := validatePlatformRotationPolicy(raw); err != nil {
+		return err
+	}
+	cfg.RotationPolicy = string(platform.NormalizeRotationPolicy(raw))
+	if cfg.RotationPolicy == string(platform.RotationPolicyKeep) {
+		cfg.RotationIntervalNs = 0
+		cfg.StickyTTLNs = 0
+	}
+	return nil
+}
+
+func setPlatformRotationInterval(cfg *platformConfig, d time.Duration) *ServiceError {
+	if d == 0 && platform.NormalizeRotationPolicy(cfg.RotationPolicy) == platform.RotationPolicyKeep {
+		cfg.RotationIntervalNs = 0
+		cfg.StickyTTLNs = 0
+		return nil
+	}
+	if d <= 0 {
+		return invalidArg("rotation_interval: must be > 0")
+	}
+	cfg.RotationPolicy = string(platform.RotationPolicyTTL)
+	cfg.RotationIntervalNs = int64(d)
+	cfg.StickyTTLNs = int64(d)
 	return nil
 }
 
@@ -258,6 +351,18 @@ func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *Se
 	}
 	if err := validatePlatformEmptyAccountConfig(cfg); err != nil {
 		return err
+	}
+	if err := validatePlatformProxyAccessMode(cfg.ProxyAccessMode); err != nil {
+		return err
+	}
+	if err := validatePlatformRotationPolicy(cfg.RotationPolicy); err != nil {
+		return err
+	}
+	if platform.NormalizeRotationPolicy(cfg.RotationPolicy) == platform.RotationPolicyTTL && cfg.RotationIntervalNs <= 0 {
+		return invalidArg("rotation_interval: must be > 0 when rotation_policy is TTL")
+	}
+	if platform.NormalizeRotationPolicy(cfg.RotationPolicy) == platform.RotationPolicyKeep && cfg.RotationIntervalNs != 0 {
+		return invalidArg("rotation_interval: must be empty when rotation_policy is KEEP")
 	}
 	return nil
 }
@@ -322,6 +427,9 @@ func (s *ControlPlaneService) GetPlatform(id string) (*PlatformResponse, error) 
 type CreatePlatformRequest struct {
 	Name                             *string  `json:"name"`
 	StickyTTL                        *string  `json:"sticky_ttl"`
+	ProxyAccessMode                  *string  `json:"proxy_access_mode"`
+	RotationPolicy                   *string  `json:"rotation_policy"`
+	RotationInterval                 *string  `json:"rotation_interval"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
 	ReverseProxyMissAction           *string  `json:"reverse_proxy_miss_action"`
@@ -355,6 +463,25 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 			return nil, invalidArg("sticky_ttl: " + err.Error())
 		}
 		if err := setPlatformStickyTTL(&cfg, d); err != nil {
+			return nil, err
+		}
+	}
+	if req.ProxyAccessMode != nil {
+		if err := setPlatformProxyAccessMode(&cfg, *req.ProxyAccessMode); err != nil {
+			return nil, err
+		}
+	}
+	if req.RotationPolicy != nil {
+		if err := setPlatformRotationPolicy(&cfg, *req.RotationPolicy); err != nil {
+			return nil, err
+		}
+	}
+	if req.RotationInterval != nil {
+		d, err := time.ParseDuration(*req.RotationInterval)
+		if err != nil {
+			return nil, invalidArg("rotation_interval: " + err.Error())
+		}
+		if err := setPlatformRotationInterval(&cfg, d); err != nil {
 			return nil, err
 		}
 	}
@@ -449,6 +576,27 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 		return nil, err
 	} else if ok {
 		if err := setPlatformStickyTTL(&cfg, d); err != nil {
+			return nil, err
+		}
+	}
+	if accessMode, ok, err := patch.optionalString("proxy_access_mode"); err != nil {
+		return nil, err
+	} else if ok {
+		if err := setPlatformProxyAccessMode(&cfg, accessMode); err != nil {
+			return nil, err
+		}
+	}
+	if rotationPolicy, ok, err := patch.optionalString("rotation_policy"); err != nil {
+		return nil, err
+	} else if ok {
+		if err := setPlatformRotationPolicy(&cfg, rotationPolicy); err != nil {
+			return nil, err
+		}
+	}
+	if d, ok, err := patch.optionalDurationString("rotation_interval"); err != nil {
+		return nil, err
+	} else if ok {
+		if err := setPlatformRotationInterval(&cfg, d); err != nil {
 			return nil, err
 		}
 	}

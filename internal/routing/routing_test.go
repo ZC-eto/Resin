@@ -237,6 +237,108 @@ func TestDeleteLease_EmitsLeaseRemoveWithLifetimeFields(t *testing.T) {
 	}
 }
 
+func TestStickyLease_ForceRotateSwitchesToDifferentEgressIP(t *testing.T) {
+	pool, subMgr := setupPool(t)
+	h1 := makeRoutableNode(t, pool, subMgr, `{"rotate":"1"}`, "10.0.0.11", "cloudflare.com", 50*time.Millisecond)
+	h2 := makeRoutableNode(t, pool, subMgr, `{"rotate":"2"}`, "10.0.0.22", "cloudflare.com", 40*time.Millisecond)
+
+	var events []routing.LeaseEvent
+	router := makeRouter(pool, &events)
+
+	now := time.Now()
+	if err := router.UpsertLease(model.Lease{
+		PlatformID:     platID,
+		Account:        "user-rotate",
+		NodeHash:       h1.Hex(),
+		EgressIP:       "10.0.0.11",
+		CreatedAtNs:    now.Add(-time.Minute).UnixNano(),
+		ExpiryNs:       now.Add(time.Hour).UnixNano(),
+		LastAccessedNs: now.Add(-time.Second).UnixNano(),
+	}); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	res, err := router.RouteRequestWithOptions(
+		platName,
+		"user-rotate",
+		"example.com",
+		routing.RouteOptions{ForceRotate: true},
+	)
+	if err != nil {
+		t.Fatalf("RouteRequestWithOptions: %v", err)
+	}
+	if res.NodeHash != h2 {
+		t.Fatalf("rotated hash: got %s, want %s", res.NodeHash.Hex(), h2.Hex())
+	}
+	if got := res.EgressIP.String(); got != "10.0.0.22" {
+		t.Fatalf("rotated egress ip: got %q, want %q", got, "10.0.0.22")
+	}
+
+	lease := router.ReadLease(model.LeaseKey{PlatformID: platID, Account: "user-rotate"})
+	if lease == nil {
+		t.Fatal("expected rotated lease to remain stored")
+	}
+	if lease.NodeHash != h2.Hex() {
+		t.Fatalf("stored lease hash: got %q, want %q", lease.NodeHash, h2.Hex())
+	}
+	if lease.EgressIP != "10.0.0.22" {
+		t.Fatalf("stored lease egress ip: got %q, want %q", lease.EgressIP, "10.0.0.22")
+	}
+
+	foundReplace := false
+	for _, e := range events {
+		if e.Type == routing.LeaseReplace && e.Account == "user-rotate" {
+			foundReplace = true
+			if e.NodeHash != h2 {
+				t.Fatalf("LeaseReplace node_hash: got %s, want %s", e.NodeHash.Hex(), h2.Hex())
+			}
+			if got := e.EgressIP.String(); got != "10.0.0.22" {
+				t.Fatalf("LeaseReplace egress_ip: got %q, want %q", got, "10.0.0.22")
+			}
+		}
+	}
+	if !foundReplace {
+		t.Fatal("expected LeaseReplace event for forced rotation")
+	}
+}
+
+func TestStickyLease_ForceRotateFallsBackWhenNoAlternativeEgressIPExists(t *testing.T) {
+	pool, subMgr := setupPool(t)
+	h1 := makeRoutableNode(t, pool, subMgr, `{"rotate-same":"1"}`, "10.0.0.33", "cloudflare.com", 50*time.Millisecond)
+	_ = makeRoutableNode(t, pool, subMgr, `{"rotate-same":"2"}`, "10.0.0.33", "cloudflare.com", 40*time.Millisecond)
+
+	router := makeRouter(pool, nil)
+
+	now := time.Now()
+	if err := router.UpsertLease(model.Lease{
+		PlatformID:     platID,
+		Account:        "user-no-alt",
+		NodeHash:       h1.Hex(),
+		EgressIP:       "10.0.0.33",
+		CreatedAtNs:    now.Add(-time.Minute).UnixNano(),
+		ExpiryNs:       now.Add(time.Hour).UnixNano(),
+		LastAccessedNs: now.Add(-time.Second).UnixNano(),
+	}); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	res, err := router.RouteRequestWithOptions(
+		platName,
+		"user-no-alt",
+		"example.com",
+		routing.RouteOptions{ForceRotate: true},
+	)
+	if err != nil {
+		t.Fatalf("RouteRequestWithOptions: %v", err)
+	}
+	if res.NodeHash != h1 {
+		t.Fatalf("fallback hash: got %s, want %s", res.NodeHash.Hex(), h1.Hex())
+	}
+	if got := res.EgressIP.String(); got != "10.0.0.33" {
+		t.Fatalf("fallback egress ip: got %q, want %q", got, "10.0.0.33")
+	}
+}
+
 // ── lease expiry test ───────────────────────────────────────────
 
 func TestStickyLease_Expiry(t *testing.T) {

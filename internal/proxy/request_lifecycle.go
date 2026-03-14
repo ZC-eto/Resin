@@ -149,7 +149,21 @@ func (l *requestLifecycle) setRouteResult(result routing.RouteResult) {
 	l.finished.PlatformID = result.PlatformID
 	l.log.PlatformID = result.PlatformID
 	l.log.PlatformName = result.PlatformName
+	l.log.AccessMode = result.AccessMode
+	l.log.LeaseAction = result.LeaseAction
+	l.log.RotateRequested = result.RotateRequested
+	l.log.RotateApplied = result.RotateApplied
+	l.log.RotateSource = result.RotateSource
 	l.log.NodeHash = result.NodeHash.Hex()
 	l.log.NodeTag = result.NodeTag
-	l.log.EgressIP = result.EgressIP.String()
+	if result.EgressIP.IsValid() {
+		l.log.EgressIP = result.EgressIP.String()
+	} else {
+		l.log.EgressIP = ""
+	}
+	if result.PreviousEgressIP.IsValid() {
+		l.log.PreviousEgressIP = result.PreviousEgressIP.String()
+	} else {
+		l.log.PreviousEgressIP = ""
+	}
 }
