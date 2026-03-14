@@ -74,6 +74,11 @@ function buildStickyTemplateURL(platformName: string, token: string, authority: 
   return `http://${platformName}.{account}:${token}@${authority}`;
 }
 
+function buildRotateCurlCommand(rotateAPIURL: string, account: string): string {
+  const normalizedAccount = account.trim() || "account_001";
+  return `curl -X POST "${rotateAPIURL}" -H "Content-Type: application/json" -d "{\\"account\\":\\"${normalizedAccount}\\"}"`;
+}
+
 export function PlatformDetailPage() {
   const { t } = useI18n();
   const { platformId = "" } = useParams();
@@ -305,6 +310,7 @@ export function PlatformDetailPage() {
     platform && exportToken
       ? `http://${authority}/${exportToken}/api/v1/${platform.name}/actions/rotate-lease`
       : "";
+  const rotateCurlCommand = rotateAPIURL ? buildRotateCurlCommand(rotateAPIURL, exportAccount) : "";
 
   return (
     <section className="platform-page platform-detail-page">
@@ -468,10 +474,10 @@ export function PlatformDetailPage() {
                     <label className="field-label" htmlFor="detail-edit-proxy-access-mode" style={{ visibility: "hidden" }}>
                       {t("粘性代理模式")}
                     </label>
-                    <div className="subscription-switch-item">
-                      <label className="subscription-switch-label" htmlFor="detail-edit-proxy-access-mode">
-                        <span>{t("粘性代理模式")}</span>
-                        <span className="muted">
+                    <div className="subscription-switch-item platform-mode-switch-item">
+                      <label className="subscription-switch-label platform-switch-label" htmlFor="detail-edit-proxy-access-mode">
+                        <span className="platform-switch-title">{t("粘性代理模式")}</span>
+                        <span className="muted platform-switch-hint">
                           {detailProxyAccessMode === "STICKY"
                             ? t("当前平台默认导出粘性代理地址，适合固定账号长期复用。")
                             : t("当前平台默认导出普通代理地址，适合外部服务直接填入。")}
@@ -700,6 +706,31 @@ export function PlatformDetailPage() {
                       <Button variant="secondary" onClick={() => void copyText(rotateAPIURL, t("Rotate API 地址已复制"))}>
                         {t("复制")}
                       </Button>
+                    </div>
+                  </div>
+
+                  <div className="platform-usage-notes">
+                    <div className="platform-usage-note">
+                      <h5>{t("当前项目推荐接法")}</h5>
+                      <ul className="platform-usage-list">
+                        <li>{t("普通浏览器或指纹浏览器：直接复制“普通代理地址”填入 HTTP 代理。")}</li>
+                        <li>{t("需要按账号长期保持出口：复制“多账号模板”，把 {account} 替换成业务账号。")}</li>
+                        <li>{t("Gemini Business2API：Auth 和 Chat 平台都建议开启“粘性代理模式”并把“轮换策略”设为“保持原出口”。")}</li>
+                        <li>{t("Gemini Business2API 里无需单独再填 Rotate API，只要代理地址使用 http://平台.{account}:Token@主机:端口 这种标准格式，程序就能自动推导 Rotate 接口。")}</li>
+                      </ul>
+                    </div>
+
+                    <div className="platform-usage-note">
+                      <h5>{t("手动 Rotate 请求示例")}</h5>
+                      <p className="platform-op-hint">
+                        {t("如果业务端识别到“当前账号这个 IP 已被风控”，可以主动调用下面这条命令。")}
+                      </p>
+                      <Textarea readOnly rows={3} value={rotateCurlCommand} />
+                      <div className="platform-usage-actions">
+                        <Button variant="secondary" onClick={() => void copyText(rotateCurlCommand, t("Rotate 命令已复制"))}>
+                          {t("复制命令")}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>

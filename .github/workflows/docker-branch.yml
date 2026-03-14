@@ -1,9 +1,9 @@
-name: Build Branch Image
+name: Build And Deploy Image
 
 on:
   push:
     branches:
-      - main
+      - master
       - codex/sticky-routing-controls
   workflow_dispatch:
 
@@ -43,7 +43,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+            type=raw,value=latest,enable=${{ github.ref_name == 'master' }}
 
       - name: Build and push image
         uses: docker/build-push-action@v5
@@ -57,3 +57,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
+  deploy:
+    needs: docker
+    if: github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Trigger Dokploy redeploy
+        env:
+          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          DOKPLOY_COMPOSE_ID: ${{ secrets.DOKPLOY_COMPOSE_ID }}
+        run: |
+          set -euo pipefail
+          : "${DOKPLOY_URL:?missing DOKPLOY_URL}"
+          : "${DOKPLOY_API_KEY:?missing DOKPLOY_API_KEY}"
+          : "${DOKPLOY_COMPOSE_ID:?missing DOKPLOY_COMPOSE_ID}"
+          curl -fsS -X POST "${DOKPLOY_URL%/}/api/compose.deploy" \
+            -H "x-api-key: ${DOKPLOY_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"json\":{\"composeId\":\"${DOKPLOY_COMPOSE_ID}\"}}"

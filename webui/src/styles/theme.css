@@ -630,7 +630,7 @@ a {
 
 .platform-detail-header-footer {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
@@ -2485,6 +2485,29 @@ a {
   gap: 14px;
 }
 
+.platform-mode-switch-item {
+  align-items: flex-start;
+}
+
+.platform-switch-label {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  line-height: 1.4;
+}
+
+.platform-switch-title {
+  color: #3f4b63;
+  font-weight: 700;
+}
+
+.platform-switch-hint {
+  display: block;
+  line-height: 1.45;
+}
+
 .platform-export-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2495,6 +2518,43 @@ a {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.platform-usage-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.platform-usage-note {
+  border: 1px solid rgba(37, 72, 120, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.platform-usage-note h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.platform-usage-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.platform-usage-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .platform-export-item {
@@ -2816,6 +2876,10 @@ a {
   }
 
   .platform-export-item {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-usage-notes {
     grid-template-columns: 1fr;
   }
 

@@ -116,6 +116,6 @@ export function toPlatformCreateInput(values: PlatformFormValues): PlatformCreat
 export function toPlatformUpdateInput(values: PlatformFormValues): PlatformUpdateInput {
   return {
     ...toPlatformPayloadBase(values),
-    rotation_interval: values.rotation_policy === "TTL" ? values.rotation_interval?.trim() || "" : "",
+    rotation_interval: values.rotation_policy === "TTL" ? values.rotation_interval?.trim() || "" : undefined,
   };
 }
