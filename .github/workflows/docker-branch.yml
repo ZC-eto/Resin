@@ -66,20 +66,77 @@ jobs:
       contents: read
 
     steps:
-      - name: Trigger Dokploy redeploy
+      - name: Update Dokploy compose image and redeploy
         env:
           DOKPLOY_HOST: ${{ secrets.DOKPLOY_HOST }}
           DOKPLOY_DIRECT_IP: ${{ secrets.DOKPLOY_DIRECT_IP }}
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
           DOKPLOY_COMPOSE_ID: ${{ secrets.DOKPLOY_COMPOSE_ID }}
+          TARGET_IMAGE: ghcr.io/zc-eto/resin:sha-${{ github.sha }}
         run: |
           set -euo pipefail
           : "${DOKPLOY_HOST:?missing DOKPLOY_HOST}"
           : "${DOKPLOY_DIRECT_IP:?missing DOKPLOY_DIRECT_IP}"
           : "${DOKPLOY_API_KEY:?missing DOKPLOY_API_KEY}"
           : "${DOKPLOY_COMPOSE_ID:?missing DOKPLOY_COMPOSE_ID}"
-          curl -fsS --insecure -X POST "https://${DOKPLOY_DIRECT_IP}/api/compose.deploy" \
-            -H "Host: ${DOKPLOY_HOST}" \
-            -H "x-api-key: ${DOKPLOY_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"composeId\":\"${DOKPLOY_COMPOSE_ID}\"}"
+          : "${TARGET_IMAGE:?missing TARGET_IMAGE}"
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import ssl
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          host = os.environ["DOKPLOY_HOST"]
+          direct_ip = os.environ["DOKPLOY_DIRECT_IP"]
+          api_key = os.environ["DOKPLOY_API_KEY"]
+          compose_id = os.environ["DOKPLOY_COMPOSE_ID"]
+          target_image = os.environ["TARGET_IMAGE"]
+          ctx = ssl._create_unverified_context()
+
+          def request(path: str, method: str = "GET", payload: dict | None = None) -> dict:
+              url = f"https://{direct_ip}{path}"
+              body = None
+              headers = {
+                  "Host": host,
+                  "x-api-key": api_key,
+              }
+              if payload is not None:
+                  body = json.dumps(payload).encode("utf-8")
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              with urllib.request.urlopen(req, context=ctx) as resp:
+                  return json.loads(resp.read().decode("utf-8"))
+
+          query = urllib.parse.quote(json.dumps({"json": {"composeId": compose_id}}))
+          compose = request(f"/api/trpc/compose.one?input={query}")["result"]["data"]["json"]["composeFile"]
+          updated_compose, replacements = re.subn(
+              r"(^\s*image:\s*)(\S+)",
+              rf"\1{target_image}",
+              compose,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if replacements != 1:
+              print("Failed to locate image line in Dokploy compose", file=sys.stderr)
+              sys.exit(1)
+
+          update_result = request(
+              "/api/compose.update",
+              method="POST",
+              payload={
+                  "composeId": compose_id,
+                  "composeFile": updated_compose,
+              },
+          )
+          print("compose.update ok:", update_result.get("composeId", compose_id))
+
+          redeploy_result = request(
+              "/api/compose.redeploy",
+              method="POST",
+              payload={"composeId": compose_id},
+          )
+          print("compose.redeploy ok:", redeploy_result.get("message", "queued"))
+          PY
