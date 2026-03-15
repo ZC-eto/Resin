@@ -12,6 +12,13 @@ export type RuntimeConfig = {
   max_egress_test_interval: string;
   latency_test_url: string;
   latency_authorities: string[];
+  ip_profile_local_lookup_enabled: boolean;
+  ip_profile_online_provider: string;
+  ip_profile_online_api_key: string;
+  ip_profile_online_requests_per_minute: number;
+  ip_profile_cache_ttl: string;
+  ip_profile_background_enabled: boolean;
+  ip_profile_refresh_on_egress_change: boolean;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;

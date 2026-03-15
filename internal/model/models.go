@@ -24,9 +24,9 @@ func NormalizeEgressNetworkType(raw string) EgressNetworkType {
 type EgressProfileSource string
 
 const (
-	EgressProfileSourceUnknown        EgressProfileSource = ""
-	EgressProfileSourceLocal          EgressProfileSource = "LOCAL"
-	EgressProfileSourceOnline         EgressProfileSource = "ONLINE"
+	EgressProfileSourceUnknown         EgressProfileSource = ""
+	EgressProfileSourceLocal           EgressProfileSource = "LOCAL"
+	EgressProfileSourceOnline          EgressProfileSource = "ONLINE"
 	EgressProfileSourceLocalPlusOnline EgressProfileSource = "LOCAL_PLUS_ONLINE"
 )
 
@@ -69,10 +69,10 @@ type Platform struct {
 	RegionFilters                    []string
 	SubscriptionFilters              []string
 	NetworkTypeFilters               []string
-	MinQualityScore                  *int `json:"min_quality_score,omitempty"`
-	MaxReferenceLatencyMs            *int `json:"max_reference_latency_ms,omitempty"`
-	MinEgressStabilityScore          *int `json:"min_egress_stability_score,omitempty"`
-	MaxCircuitOpenCount              *int `json:"max_circuit_open_count,omitempty"`
+	MinQualityScore                  *int   `json:"min_quality_score,omitempty"`
+	MaxReferenceLatencyMs            *int   `json:"max_reference_latency_ms,omitempty"`
+	MinEgressStabilityScore          *int   `json:"min_egress_stability_score,omitempty"`
+	MaxCircuitOpenCount              *int   `json:"max_circuit_open_count,omitempty"`
 	ReverseProxyMissAction           string `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   string `json:"reverse_proxy_fixed_account_header"`
@@ -134,6 +134,18 @@ type NodeDynamic struct {
 	EgressIPChangeCountTotal           int64  `json:"egress_ip_change_count_total"`
 	LastEgressIPChangeAtNs             int64  `json:"last_egress_ip_change_at_ns"`
 	CircuitOpenCountTotal              int64  `json:"circuit_open_count_total"`
+}
+
+// EgressProfileCacheEntry stores per-egress-IP profile snapshots.
+type EgressProfileCacheEntry struct {
+	EgressIP                 string `json:"egress_ip"`
+	EgressNetworkType        string `json:"egress_network_type"`
+	EgressASN                int64  `json:"egress_asn"`
+	EgressASNName            string `json:"egress_asn_name"`
+	EgressASNType            string `json:"egress_asn_type"`
+	EgressProvider           string `json:"egress_provider"`
+	EgressProfileSource      string `json:"egress_profile_source"`
+	EgressProfileUpdatedAtNs int64  `json:"egress_profile_updated_at_ns"`
 }
 
 // NodeLatency holds per-domain latency statistics for a node.

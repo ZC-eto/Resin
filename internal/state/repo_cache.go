@@ -169,6 +169,55 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	return result, rows.Err()
 }
 
+// --- egress_profile_cache ---
+
+// GetEgressProfileCache reads a cached profile snapshot by egress IP.
+func (r *CacheRepo) GetEgressProfileCache(egressIP string) (*model.EgressProfileCacheEntry, error) {
+	row := r.db.QueryRow(`
+		SELECT egress_ip, egress_network_type, egress_asn, egress_asn_name, egress_asn_type,
+		       egress_provider, egress_profile_source, egress_profile_updated_at_ns
+		FROM egress_profile_cache
+		WHERE egress_ip = ?`, egressIP)
+	var entry model.EgressProfileCacheEntry
+	if err := row.Scan(
+		&entry.EgressIP,
+		&entry.EgressNetworkType,
+		&entry.EgressASN,
+		&entry.EgressASNName,
+		&entry.EgressASNType,
+		&entry.EgressProvider,
+		&entry.EgressProfileSource,
+		&entry.EgressProfileUpdatedAtNs,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &entry, nil
+}
+
+// UpsertEgressProfileCache inserts or updates a cached egress profile snapshot.
+func (r *CacheRepo) UpsertEgressProfileCache(entry model.EgressProfileCacheEntry) error {
+	_, err := r.db.Exec(upsertEgressProfileCacheSQL,
+		entry.EgressIP,
+		entry.EgressNetworkType,
+		entry.EgressASN,
+		entry.EgressASNName,
+		entry.EgressASNType,
+		entry.EgressProvider,
+		entry.EgressProfileSource,
+		entry.EgressProfileUpdatedAtNs,
+	)
+	return err
+}
+
+// DeleteEgressProfileCache removes a cached egress profile snapshot.
+func (r *CacheRepo) DeleteEgressProfileCache(egressIP string) error {
+	_, err := r.db.Exec(deleteEgressProfileCacheSQL, egressIP)
+	return err
+}
+
 // --- node_latency ---
 
 // BulkUpsertNodeLatency batch-inserts or updates node latency records.
@@ -551,9 +600,24 @@ const (
 			tags_json = excluded.tags_json,
 			evicted = excluded.evicted`
 
-	deleteNodesStaticSQL       = "DELETE FROM nodes_static WHERE hash = ?"
-	deleteNodesDynamicSQL      = "DELETE FROM nodes_dynamic WHERE hash = ?"
-	deleteNodeLatencySQL       = "DELETE FROM node_latency WHERE node_hash = ? AND domain = ?"
-	deleteLeasesSQL            = "DELETE FROM leases WHERE platform_id = ? AND account = ?"
-	deleteSubscriptionNodesSQL = "DELETE FROM subscription_nodes WHERE subscription_id = ? AND node_hash = ?"
+	upsertEgressProfileCacheSQL = `INSERT INTO egress_profile_cache (
+			egress_ip, egress_network_type, egress_asn, egress_asn_name, egress_asn_type,
+			egress_provider, egress_profile_source, egress_profile_updated_at_ns
+		)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(egress_ip) DO UPDATE SET
+			egress_network_type        = excluded.egress_network_type,
+			egress_asn                 = excluded.egress_asn,
+			egress_asn_name            = excluded.egress_asn_name,
+			egress_asn_type            = excluded.egress_asn_type,
+			egress_provider            = excluded.egress_provider,
+			egress_profile_source      = excluded.egress_profile_source,
+			egress_profile_updated_at_ns = excluded.egress_profile_updated_at_ns`
+
+	deleteNodesStaticSQL        = "DELETE FROM nodes_static WHERE hash = ?"
+	deleteNodesDynamicSQL       = "DELETE FROM nodes_dynamic WHERE hash = ?"
+	deleteNodeLatencySQL        = "DELETE FROM node_latency WHERE node_hash = ? AND domain = ?"
+	deleteLeasesSQL             = "DELETE FROM leases WHERE platform_id = ? AND account = ?"
+	deleteSubscriptionNodesSQL  = "DELETE FROM subscription_nodes WHERE subscription_id = ? AND node_hash = ?"
+	deleteEgressProfileCacheSQL = "DELETE FROM egress_profile_cache WHERE egress_ip = ?"
 )

@@ -24,6 +24,15 @@ func TestNewDefaultRuntimeConfig(t *testing.T) {
 	if len(cfg.LatencyAuthorities) != 4 {
 		t.Errorf("LatencyAuthorities: got %d items, want 4", len(cfg.LatencyAuthorities))
 	}
+	if cfg.IPProfileLocalLookupEnabled != true {
+		t.Errorf("IPProfileLocalLookupEnabled: got %v, want true", cfg.IPProfileLocalLookupEnabled)
+	}
+	if cfg.IPProfileOnlineProvider != string(IPProfileOnlineProviderDisabled) {
+		t.Errorf("IPProfileOnlineProvider: got %q, want %q", cfg.IPProfileOnlineProvider, IPProfileOnlineProviderDisabled)
+	}
+	if cfg.IPProfileOnlineRequestsPerMinute != 120 {
+		t.Errorf("IPProfileOnlineRequestsPerMinute: got %d, want 120", cfg.IPProfileOnlineRequestsPerMinute)
+	}
 }
 
 func TestRuntimeConfig_JSONRoundTrip(t *testing.T) {
@@ -45,6 +54,12 @@ func TestRuntimeConfig_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.MaxConsecutiveFailures != original.MaxConsecutiveFailures {
 		t.Errorf("MaxConsecutiveFailures: got %d, want %d", decoded.MaxConsecutiveFailures, original.MaxConsecutiveFailures)
+	}
+	if decoded.IPProfileOnlineProvider != original.IPProfileOnlineProvider {
+		t.Errorf("IPProfileOnlineProvider: got %q, want %q", decoded.IPProfileOnlineProvider, original.IPProfileOnlineProvider)
+	}
+	if decoded.IPProfileCacheTTL != original.IPProfileCacheTTL {
+		t.Errorf("IPProfileCacheTTL: got %v, want %v", decoded.IPProfileCacheTTL, original.IPProfileCacheTTL)
 	}
 }
 
@@ -108,6 +123,13 @@ func TestRuntimeConfig_JSONFieldNames(t *testing.T) {
 		"max_egress_test_interval",
 		"latency_test_url",
 		"latency_authorities",
+		"ip_profile_local_lookup_enabled",
+		"ip_profile_online_provider",
+		"ip_profile_online_api_key",
+		"ip_profile_online_requests_per_minute",
+		"ip_profile_cache_ttl",
+		"ip_profile_background_enabled",
+		"ip_profile_refresh_on_egress_change",
 		"p2c_latency_window",
 		"latency_decay_window",
 		"cache_flush_interval",

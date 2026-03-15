@@ -96,16 +96,41 @@ func authVersionStartupWarning(authVersion config.AuthVersion) string {
 	)
 }
 
-func loadRuntimeConfig(engine *state.StateEngine) *config.RuntimeConfig {
+func loadRuntimeConfig(engine *state.StateEngine, envCfg *config.EnvConfig) *config.RuntimeConfig {
 	runtimeCfg, ver, err := engine.GetSystemConfig()
 	if err != nil {
 		fatalf("load system config: %v", err)
 	}
 	if runtimeCfg == nil {
 		log.Println("No persisted runtime config found, using defaults")
-		return config.NewDefaultRuntimeConfig()
+		return applyRuntimeEnvDefaults(config.NewDefaultRuntimeConfig(), envCfg)
 	}
 	log.Printf("Loaded persisted runtime config (version %d)", ver)
+	return applyRuntimeEnvDefaults(runtimeCfg, envCfg)
+}
+
+func applyRuntimeEnvDefaults(runtimeCfg *config.RuntimeConfig, envCfg *config.EnvConfig) *config.RuntimeConfig {
+	if runtimeCfg == nil {
+		runtimeCfg = config.NewDefaultRuntimeConfig()
+	}
+	if envCfg == nil {
+		return runtimeCfg
+	}
+	if strings.TrimSpace(runtimeCfg.IPProfileOnlineProvider) == "" && strings.TrimSpace(envCfg.IPinfoToken) != "" {
+		runtimeCfg.IPProfileOnlineProvider = string(config.IPProfileOnlineProviderIPInfo)
+	}
+	if strings.TrimSpace(runtimeCfg.IPProfileOnlineAPIKey) == "" && strings.TrimSpace(envCfg.IPinfoToken) != "" {
+		runtimeCfg.IPProfileOnlineAPIKey = strings.TrimSpace(envCfg.IPinfoToken)
+	}
+	if runtimeCfg.IPProfileOnlineRequestsPerMinute <= 0 {
+		runtimeCfg.IPProfileOnlineRequestsPerMinute = envCfg.IPProfileOnlineRequestsPerMinute
+	}
+	if time.Duration(runtimeCfg.IPProfileCacheTTL) <= 0 {
+		runtimeCfg.IPProfileCacheTTL = config.Duration(envCfg.IPProfileCacheTTL)
+	}
+	if strings.TrimSpace(envCfg.IPinfoASNMMDBPath) != "" || strings.TrimSpace(envCfg.IPinfoPrivacyMMDBPath) != "" {
+		runtimeCfg.IPProfileLocalLookupEnabled = true
+	}
 	return runtimeCfg
 }
 
@@ -271,14 +296,24 @@ func newTopologyRuntime(
 	outboundMgr := outbound.NewOutboundManager(pool, singboxBuilder)
 
 	profileSvc := ipprofile.NewService(ipprofile.Config{
-		Pool:                    pool,
-		LocalASNMMDBPath:        envCfg.IPinfoASNMMDBPath,
-		LocalPrivacyMMDBPath:    envCfg.IPinfoPrivacyMMDBPath,
-		IPinfoToken:             envCfg.IPinfoToken,
-		OnlineRequestsPerMinute: envCfg.IPProfileOnlineRequestsPerMinute,
-		CacheTTL:                envCfg.IPProfileCacheTTL,
-		BackgroundEnabled:       envCfg.IPProfileBackgroundEnabled,
-		BackgroundBatchSize:     envCfg.IPProfileBackgroundBatchSize,
+		Pool:                 pool,
+		Engine:               engine,
+		LocalASNMMDBPath:     envCfg.IPinfoASNMMDBPath,
+		LocalPrivacyMMDBPath: envCfg.IPinfoPrivacyMMDBPath,
+		LegacyIPinfoToken:    envCfg.IPinfoToken,
+		BackgroundBatchSize:  envCfg.IPProfileBackgroundBatchSize,
+		RuntimeSettings: func() ipprofile.RuntimeSettings {
+			cfg := runtimeConfigSnapshot(runtimeCfg)
+			return ipprofile.RuntimeSettings{
+				LocalLookupEnabled:      cfg.IPProfileLocalLookupEnabled,
+				OnlineProvider:          config.NormalizeIPProfileOnlineProvider(cfg.IPProfileOnlineProvider),
+				OnlineAPIKey:            cfg.IPProfileOnlineAPIKey,
+				OnlineRequestsPerMinute: cfg.IPProfileOnlineRequestsPerMinute,
+				CacheTTL:                time.Duration(cfg.IPProfileCacheTTL),
+				BackgroundEnabled:       cfg.IPProfileBackgroundEnabled,
+				RefreshOnEgressChange:   cfg.IPProfileRefreshOnEgressChange,
+			}
+		},
 	})
 
 	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
@@ -320,7 +355,9 @@ func newTopologyRuntime(
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
 		},
 		OnEgressSample: func(hash node.Hash, _ netip.Addr) {
-			profileSvc.Enqueue(hash)
+			if runtimeConfigSnapshot(runtimeCfg).IPProfileRefreshOnEgressChange {
+				profileSvc.Enqueue(hash)
+			}
 		},
 	})
 

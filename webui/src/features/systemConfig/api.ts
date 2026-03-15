@@ -17,6 +17,13 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   max_egress_test_interval: "",
   latency_test_url: "",
   latency_authorities: [],
+  ip_profile_local_lookup_enabled: true,
+  ip_profile_online_provider: "DISABLED",
+  ip_profile_online_api_key: "",
+  ip_profile_online_requests_per_minute: 120,
+  ip_profile_cache_ttl: "720h",
+  ip_profile_background_enabled: true,
+  ip_profile_refresh_on_egress_change: true,
   p2c_latency_window: "",
   latency_decay_window: "",
   cache_flush_interval: "",
@@ -74,6 +81,16 @@ function normalizeRuntimeConfig(raw: Partial<RuntimeConfig> | null | undefined):
     latency_authorities: Array.isArray(raw.latency_authorities)
       ? raw.latency_authorities.filter((item): item is string => typeof item === "string")
       : DEFAULT_CONFIG.latency_authorities,
+    ip_profile_local_lookup_enabled: Boolean(raw.ip_profile_local_lookup_enabled),
+    ip_profile_online_provider: asString(raw.ip_profile_online_provider, DEFAULT_CONFIG.ip_profile_online_provider),
+    ip_profile_online_api_key: asString(raw.ip_profile_online_api_key, DEFAULT_CONFIG.ip_profile_online_api_key),
+    ip_profile_online_requests_per_minute: asNumber(
+      raw.ip_profile_online_requests_per_minute,
+      DEFAULT_CONFIG.ip_profile_online_requests_per_minute,
+    ),
+    ip_profile_cache_ttl: asString(raw.ip_profile_cache_ttl, DEFAULT_CONFIG.ip_profile_cache_ttl),
+    ip_profile_background_enabled: Boolean(raw.ip_profile_background_enabled),
+    ip_profile_refresh_on_egress_change: Boolean(raw.ip_profile_refresh_on_egress_change),
     p2c_latency_window: asString(raw.p2c_latency_window, DEFAULT_CONFIG.p2c_latency_window),
     latency_decay_window: asString(raw.latency_decay_window, DEFAULT_CONFIG.latency_decay_window),
     cache_flush_interval: asString(raw.cache_flush_interval, DEFAULT_CONFIG.cache_flush_interval),
@@ -104,4 +121,10 @@ export async function patchSystemConfig(patch: RuntimeConfigPatch): Promise<Runt
 
 export async function getEnvConfig(): Promise<EnvConfig> {
   return await apiRequest<EnvConfig>(path + "/env");
+}
+
+export async function reprofileKnownNodes(): Promise<{ requested: number; accepted: number; failed: string[] }> {
+  return await apiRequest(path.replace("/config", "/actions/reprofile-known-nodes"), {
+    method: "POST",
+  });
 }

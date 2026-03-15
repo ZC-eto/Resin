@@ -87,7 +87,7 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 		envCfg:     envCfg,
 		runtimeCfg: &atomic.Pointer[config.RuntimeConfig]{},
 	}
-	app.runtimeCfg.Store(loadRuntimeConfig(engine))
+	app.runtimeCfg.Store(loadRuntimeConfig(engine, envCfg))
 	if err := ensureDefaultAccountHeaderRule(engine); err != nil {
 		return nil, err
 	}
@@ -331,7 +331,9 @@ func (a *resinApp) startBackgroundServices() {
 	log.Println("Metrics manager started (batch 1)")
 	if a.topoRuntime.profileSvc != nil {
 		a.topoRuntime.profileSvc.Start()
-		a.topoRuntime.profileSvc.SeedExistingNodes()
+		if runtimeConfigSnapshot(a.runtimeCfg).IPProfileBackgroundEnabled {
+			a.topoRuntime.profileSvc.SeedExistingNodes(false)
+		}
 		log.Println("IP profile service started (batch 1)")
 	}
 
@@ -376,6 +378,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Scheduler:      a.topoRuntime.scheduler,
 		Router:         a.topoRuntime.router,
 		ProbeMgr:       a.topoRuntime.probeMgr,
+		ProfileSvc:     a.topoRuntime.profileSvc,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
 	}

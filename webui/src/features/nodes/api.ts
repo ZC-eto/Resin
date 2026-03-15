@@ -2,6 +2,7 @@ import { apiRequest } from "../../lib/api-client";
 import type {
   EgressProbeResult,
   LatencyProbeResult,
+  NodeReprofileBatchResult,
   NodeListQuery,
   NodeSummary,
   PageResponse,
@@ -141,5 +142,19 @@ export async function probeEgress(hash: string): Promise<EgressProbeResult> {
 export async function probeLatency(hash: string): Promise<LatencyProbeResult> {
   return apiRequest<LatencyProbeResult>(`${basePath}/${hash}/actions/probe-latency`, {
     method: "POST",
+  });
+}
+
+export async function reprofileNode(hash: string): Promise<NodeSummary> {
+  const data = await apiRequest<ApiNodeSummary>(`${basePath}/${hash}/actions/reprofile`, {
+    method: "POST",
+  });
+  return normalizeNode(data);
+}
+
+export async function reprofileNodes(hashes: string[]): Promise<NodeReprofileBatchResult> {
+  return apiRequest<NodeReprofileBatchResult>(`${basePath}/actions/reprofile`, {
+    method: "POST",
+    body: { hashes },
   });
 }

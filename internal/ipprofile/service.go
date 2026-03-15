@@ -12,43 +12,63 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/state"
 	"github.com/Resinat/Resin/internal/topology"
 	"github.com/oschwald/maxminddb-golang"
 	"golang.org/x/time/rate"
 )
 
+type RuntimeSettings struct {
+	LocalLookupEnabled      bool
+	OnlineProvider          config.IPProfileOnlineProvider
+	OnlineAPIKey            string
+	OnlineRequestsPerMinute int
+	CacheTTL                time.Duration
+	BackgroundEnabled       bool
+	RefreshOnEgressChange   bool
+}
+
 type Config struct {
-	Pool                     *topology.GlobalNodePool
-	LocalASNMMDBPath         string
-	LocalPrivacyMMDBPath     string
-	IPinfoToken              string
-	OnlineRequestsPerMinute  int
-	CacheTTL                 time.Duration
-	BackgroundEnabled        bool
-	BackgroundBatchSize      int
-	HTTPClient               *http.Client
+	Pool                 *topology.GlobalNodePool
+	Engine               *state.StateEngine
+	LocalASNMMDBPath     string
+	LocalPrivacyMMDBPath string
+	LegacyIPinfoToken    string
+	BackgroundBatchSize  int
+	RuntimeSettings      func() RuntimeSettings
+	HTTPClient           *http.Client
 }
 
 type Service struct {
-	pool              *topology.GlobalNodePool
-	asnDB             *maxminddb.Reader
-	privacyDB         *maxminddb.Reader
-	httpClient        *http.Client
-	ipinfoToken       string
-	backgroundEnabled bool
+	pool                *topology.GlobalNodePool
+	engine              *state.StateEngine
+	asnDB               *maxminddb.Reader
+	privacyDB           *maxminddb.Reader
+	httpClient          *http.Client
+	legacyIPinfoToken   string
+	runtimeSettings     func() RuntimeSettings
 	backgroundBatchSize int
-	cacheTTL          time.Duration
-	onlineLimiter     *rate.Limiter
 
-	queue   chan node.Hash
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
+	queue    chan queueItem
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 	queuedMu sync.Mutex
-	queued  map[string]struct{}
+	queued   map[string]struct{}
+
 	cacheMu sync.RWMutex
 	cache   map[string]cachedProfile
+
+	limiterMu        sync.Mutex
+	onlineLimiter    *rate.Limiter
+	onlineLimiterRPM int
+}
+
+type queueItem struct {
+	hash  node.Hash
+	force bool
 }
 
 type cachedProfile struct {
@@ -79,14 +99,22 @@ type residentialProxyResponse struct {
 	Service         string `json:"service"`
 }
 
+type proxycheckIPResponse struct {
+	Proxy        string `json:"proxy"`
+	Type         string `json:"type"`
+	Provider     string `json:"provider"`
+	Organisation string `json:"organisation"`
+	ASN          string `json:"asn"`
+}
+
 func NewService(cfg Config) *Service {
 	svc := &Service{
 		pool:                cfg.Pool,
+		engine:              cfg.Engine,
 		httpClient:          cfg.HTTPClient,
-		ipinfoToken:         strings.TrimSpace(cfg.IPinfoToken),
-		backgroundEnabled:   cfg.BackgroundEnabled,
+		legacyIPinfoToken:   strings.TrimSpace(cfg.LegacyIPinfoToken),
+		runtimeSettings:     cfg.RuntimeSettings,
 		backgroundBatchSize: cfg.BackgroundBatchSize,
-		cacheTTL:            cfg.CacheTTL,
 		stopCh:              make(chan struct{}),
 		queued:              make(map[string]struct{}),
 		cache:               make(map[string]cachedProfile),
@@ -94,15 +122,9 @@ func NewService(cfg Config) *Service {
 	if svc.backgroundBatchSize <= 0 {
 		svc.backgroundBatchSize = 16
 	}
-	svc.queue = make(chan node.Hash, svc.backgroundBatchSize*4)
+	svc.queue = make(chan queueItem, svc.backgroundBatchSize*8)
 	if svc.httpClient == nil {
-		svc.httpClient = &http.Client{Timeout: 5 * time.Second}
-	}
-	if svc.cacheTTL <= 0 {
-		svc.cacheTTL = 24 * time.Hour
-	}
-	if rpm := cfg.OnlineRequestsPerMinute; rpm > 0 {
-		svc.onlineLimiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), 1)
+		svc.httpClient = &http.Client{Timeout: 8 * time.Second}
 	}
 	if strings.TrimSpace(cfg.LocalASNMMDBPath) != "" {
 		db, err := maxminddb.Open(cfg.LocalASNMMDBPath)
@@ -124,7 +146,7 @@ func NewService(cfg Config) *Service {
 }
 
 func (s *Service) Start() {
-	if s == nil || !s.backgroundEnabled {
+	if s == nil {
 		return
 	}
 	s.wg.Add(1)
@@ -148,10 +170,48 @@ func (s *Service) Stop() {
 	}
 }
 
-func (s *Service) Enqueue(hash node.Hash) {
-	if s == nil || !s.backgroundEnabled {
+func (s *Service) settingsSnapshot() RuntimeSettings {
+	if s == nil || s.runtimeSettings == nil {
+		return RuntimeSettings{
+			LocalLookupEnabled:      true,
+			OnlineProvider:          providerFromLegacyToken(s.legacyIPinfoToken),
+			OnlineAPIKey:            strings.TrimSpace(s.legacyIPinfoToken),
+			OnlineRequestsPerMinute: 120,
+			CacheTTL:                30 * 24 * time.Hour,
+			BackgroundEnabled:       true,
+			RefreshOnEgressChange:   true,
+		}
+	}
+	settings := s.runtimeSettings()
+	settings.OnlineProvider = config.NormalizeIPProfileOnlineProvider(string(settings.OnlineProvider))
+	settings.OnlineAPIKey = strings.TrimSpace(settings.OnlineAPIKey)
+	if settings.OnlineProvider == config.IPProfileOnlineProviderIPInfo && settings.OnlineAPIKey == "" {
+		settings.OnlineAPIKey = strings.TrimSpace(s.legacyIPinfoToken)
+	}
+	if settings.OnlineRequestsPerMinute <= 0 {
+		settings.OnlineRequestsPerMinute = 120
+	}
+	if settings.CacheTTL <= 0 {
+		settings.CacheTTL = 30 * 24 * time.Hour
+	}
+	return settings
+}
+
+func providerFromLegacyToken(token string) config.IPProfileOnlineProvider {
+	if strings.TrimSpace(token) == "" {
+		return config.IPProfileOnlineProviderDisabled
+	}
+	return config.IPProfileOnlineProviderIPInfo
+}
+
+func (s *Service) enqueue(hash node.Hash, force bool, manual bool) {
+	if s == nil {
 		return
 	}
+	if !manual && !s.settingsSnapshot().BackgroundEnabled {
+		return
+	}
+
 	hashHex := hash.Hex()
 	s.queuedMu.Lock()
 	if _, exists := s.queued[hashHex]; exists {
@@ -162,26 +222,41 @@ func (s *Service) Enqueue(hash node.Hash) {
 	s.queuedMu.Unlock()
 
 	select {
-	case s.queue <- hash:
+	case s.queue <- queueItem{hash: hash, force: force}:
 	case <-s.stopCh:
 		s.dropQueued(hashHex)
 	}
 }
 
-func (s *Service) SeedExistingNodes() {
+func (s *Service) Enqueue(hash node.Hash) {
+	s.enqueue(hash, false, false)
+}
+
+func (s *Service) EnqueueForce(hash node.Hash) {
+	s.enqueue(hash, true, true)
+}
+
+func (s *Service) SeedExistingNodes(force bool) int {
 	if s == nil || s.pool == nil {
-		return
+		return 0
 	}
+	count := 0
 	s.pool.RangeNodes(func(hash node.Hash, entry *node.NodeEntry) bool {
 		if entry.GetEgressIP().IsValid() {
-			s.Enqueue(hash)
+			if force {
+				s.EnqueueForce(hash)
+			} else {
+				s.Enqueue(hash)
+			}
+			count++
 		}
 		return true
 	})
+	return count
 }
 
 func (s *Service) run() {
-	batch := make([]node.Hash, 0, s.backgroundBatchSize)
+	batch := make([]queueItem, 0, maxInt(1, s.backgroundBatchSize))
 	for {
 		select {
 		case <-s.stopCh:
@@ -191,22 +266,21 @@ func (s *Service) run() {
 			draining := true
 			for draining && len(batch) < s.backgroundBatchSize {
 				select {
-				case h := <-s.queue:
-					batch = append(batch, h)
+				case item := <-s.queue:
+					batch = append(batch, item)
 				default:
 					draining = false
 				}
 			}
-			for _, h := range batch {
-				s.profileNode(h)
+			for _, item := range batch {
+				s.profileNode(item.hash, item.force)
 			}
 		}
 	}
 }
 
-func (s *Service) profileNode(hash node.Hash) {
+func (s *Service) profileNode(hash node.Hash, force bool) {
 	defer s.dropQueued(hash.Hex())
-
 	if s == nil || s.pool == nil {
 		return
 	}
@@ -218,7 +292,7 @@ func (s *Service) profileNode(hash node.Hash) {
 	if !ip.IsValid() {
 		return
 	}
-	profile, err := s.LookupProfile(context.Background(), ip)
+	profile, err := s.LookupProfile(context.Background(), ip, force)
 	if err != nil {
 		log.Printf("[ipprofile] lookup %s failed: %v", ip.String(), err)
 		return
@@ -226,12 +300,39 @@ func (s *Service) profileNode(hash node.Hash) {
 	s.pool.UpdateNodeProfile(hash, profile)
 }
 
-func (s *Service) LookupProfile(ctx context.Context, ip netip.Addr) (node.NodeProfile, error) {
+func (s *Service) ReprofileNodeSync(hash node.Hash, force bool) (node.NodeProfile, error) {
+	if s == nil || s.pool == nil {
+		return node.NodeProfile{}, fmt.Errorf("profile service unavailable")
+	}
+	entry, ok := s.pool.GetEntry(hash)
+	if !ok || entry == nil {
+		return node.NodeProfile{}, fmt.Errorf("node not found")
+	}
+	ip := entry.GetEgressIP()
+	if !ip.IsValid() {
+		return node.NodeProfile{}, fmt.Errorf("node has no known egress ip")
+	}
+	profile, err := s.LookupProfile(context.Background(), ip, force)
+	if err != nil {
+		return node.NodeProfile{}, err
+	}
+	s.pool.UpdateNodeProfile(hash, profile)
+	return profile, nil
+}
+
+func (s *Service) LookupProfile(ctx context.Context, ip netip.Addr, force bool) (node.NodeProfile, error) {
 	if !ip.IsValid() {
 		return node.NodeProfile{}, fmt.Errorf("invalid ip")
 	}
-	if profile, ok := s.getCached(ip.String()); ok {
-		return profile, nil
+	settings := s.settingsSnapshot()
+	if !force {
+		if profile, ok := s.getCached(ip.String(), settings.CacheTTL); ok {
+			return profile, nil
+		}
+		if profile, ok := s.getPersistentCached(ip.String(), settings.CacheTTL); ok {
+			s.putCached(ip.String(), profile, settings.CacheTTL)
+			return profile, nil
+		}
 	}
 
 	profile := node.NodeProfile{
@@ -241,18 +342,22 @@ func (s *Service) LookupProfile(ctx context.Context, ip netip.Addr) (node.NodePr
 		ProfileUpdatedAtNs: time.Now().UnixNano(),
 	}
 
-	if localProfile, ok := s.lookupLocal(ip); ok {
-		profile = mergeProfiles(profile, localProfile)
+	if settings.LocalLookupEnabled {
+		if localProfile, ok := s.lookupLocal(ip); ok {
+			profile = mergeProfiles(profile, localProfile)
+		}
 	}
-	if profile.NetworkType == model.EgressNetworkTypeUnknown && s.ipinfoToken != "" {
-		if remoteProfile, ok := s.lookupOnline(ctx, ip); ok {
+	if profile.NetworkType == model.EgressNetworkTypeUnknown {
+		if remoteProfile, ok := s.lookupOnline(ctx, ip, settings); ok {
 			profile = mergeProfiles(profile, remoteProfile)
 		}
 	}
 	if profile.Provider == "" && profile.ASNName != "" {
 		profile.Provider = profile.ASNName
 	}
-	s.putCached(ip.String(), profile)
+
+	s.putCached(ip.String(), profile, settings.CacheTTL)
+	s.putPersistentCached(profile)
 	return profile, nil
 }
 
@@ -292,17 +397,47 @@ func (s *Service) lookupLocal(ip netip.Addr) (node.NodeProfile, bool) {
 	return profile, found
 }
 
-func (s *Service) lookupOnline(ctx context.Context, ip netip.Addr) (node.NodeProfile, bool) {
-	if s.onlineLimiter != nil {
-		if err := s.onlineLimiter.Wait(ctx); err != nil {
-			return node.NodeProfile{}, false
-		}
+func (s *Service) lookupOnline(ctx context.Context, ip netip.Addr, settings RuntimeSettings) (node.NodeProfile, bool) {
+	if settings.OnlineProvider == config.IPProfileOnlineProviderDisabled {
+		return node.NodeProfile{}, false
+	}
+	apiKey := strings.TrimSpace(settings.OnlineAPIKey)
+	if apiKey == "" {
+		return node.NodeProfile{}, false
+	}
+	if err := s.waitOnline(ctx, settings.OnlineRequestsPerMinute); err != nil {
+		return node.NodeProfile{}, false
 	}
 
+	switch settings.OnlineProvider {
+	case config.IPProfileOnlineProviderProxycheck:
+		return s.lookupProxycheck(ctx, ip, apiKey)
+	case config.IPProfileOnlineProviderIPInfo:
+		return s.lookupIPInfo(ctx, ip, apiKey)
+	default:
+		return node.NodeProfile{}, false
+	}
+}
+
+func (s *Service) waitOnline(ctx context.Context, rpm int) error {
+	if rpm <= 0 {
+		rpm = 120
+	}
+	s.limiterMu.Lock()
+	if s.onlineLimiter == nil || s.onlineLimiterRPM != rpm {
+		s.onlineLimiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), 1)
+		s.onlineLimiterRPM = rpm
+	}
+	limiter := s.onlineLimiter
+	s.limiterMu.Unlock()
+	return limiter.Wait(ctx)
+}
+
+func (s *Service) lookupIPInfo(ctx context.Context, ip netip.Addr, apiKey string) (node.NodeProfile, bool) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
-		"https://ipinfo.io/resproxy/"+ip.String()+"?token="+s.ipinfoToken,
+		"https://ipinfo.io/resproxy/"+ip.String()+"?token="+apiKey,
 		nil,
 	)
 	if err != nil {
@@ -335,6 +470,59 @@ func (s *Service) lookupOnline(ctx context.Context, ip netip.Addr) (node.NodePro
 	return profile, true
 }
 
+func (s *Service) lookupProxycheck(ctx context.Context, ip netip.Addr, apiKey string) (node.NodeProfile, bool) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://proxycheck.io/v2/"+ip.String()+"?key="+apiKey+"&vpn=1&asn=1&risk=1",
+		nil,
+	)
+	if err != nil {
+		return node.NodeProfile{}, false
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return node.NodeProfile{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return node.NodeProfile{}, false
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return node.NodeProfile{}, false
+	}
+	var status string
+	if raw, ok := payload["status"]; ok {
+		_ = json.Unmarshal(raw, &status)
+	}
+	if !strings.EqualFold(strings.TrimSpace(status), "ok") {
+		return node.NodeProfile{}, false
+	}
+	rawIP, ok := payload[ip.String()]
+	if !ok {
+		return node.NodeProfile{}, false
+	}
+	var detail proxycheckIPResponse
+	if err := json.Unmarshal(rawIP, &detail); err != nil {
+		return node.NodeProfile{}, false
+	}
+	provider := strings.TrimSpace(detail.Provider)
+	if provider == "" {
+		provider = strings.TrimSpace(detail.Organisation)
+	}
+	profile := node.NodeProfile{
+		IP:                 ip,
+		NetworkType:        classifyProxycheckNetworkType(detail.Type, detail.Proxy),
+		ASN:                parseASN(detail.ASN),
+		Provider:           provider,
+		Source:             model.EgressProfileSourceOnline,
+		ProfileUpdatedAtNs: time.Now().UnixNano(),
+	}
+	return profile, true
+}
+
 func classifyLocalNetworkType(asnType string, privacy privacyRecord) model.EgressNetworkType {
 	switch {
 	case privacy.Hosting || privacy.Proxy || privacy.Relay || privacy.Tor || privacy.VPN:
@@ -359,6 +547,25 @@ func classifyRemoteNetworkType(service string) model.EgressNetworkType {
 		return model.EgressNetworkTypeDatacenter
 	case strings.TrimSpace(service) != "":
 		return model.EgressNetworkTypeResidential
+	default:
+		return model.EgressNetworkTypeUnknown
+	}
+}
+
+func classifyProxycheckNetworkType(networkType, proxyFlag string) model.EgressNetworkType {
+	normalized := strings.ToLower(strings.TrimSpace(networkType))
+	switch {
+	case strings.Contains(normalized, "residential"):
+		return model.EgressNetworkTypeResidential
+	case strings.Contains(normalized, "wireless"), strings.Contains(normalized, "mobile"), strings.Contains(normalized, "cell"):
+		return model.EgressNetworkTypeMobile
+	case strings.Contains(normalized, "hosting"),
+		strings.Contains(normalized, "business"),
+		strings.Contains(normalized, "education"),
+		strings.Contains(normalized, "government"):
+		return model.EgressNetworkTypeDatacenter
+	case strings.EqualFold(strings.TrimSpace(proxyFlag), "yes"):
+		return model.EgressNetworkTypeDatacenter
 	default:
 		return model.EgressNetworkTypeUnknown
 	}
@@ -410,7 +617,7 @@ func (s *Service) dropQueued(hashHex string) {
 	s.queuedMu.Unlock()
 }
 
-func (s *Service) getCached(ip string) (node.NodeProfile, bool) {
+func (s *Service) getCached(ip string, ttl time.Duration) (node.NodeProfile, bool) {
 	s.cacheMu.RLock()
 	cached, ok := s.cache[ip]
 	s.cacheMu.RUnlock()
@@ -420,11 +627,70 @@ func (s *Service) getCached(ip string) (node.NodeProfile, bool) {
 	return cached.profile, true
 }
 
-func (s *Service) putCached(ip string, profile node.NodeProfile) {
+func (s *Service) putCached(ip string, profile node.NodeProfile, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = 30 * 24 * time.Hour
+	}
 	s.cacheMu.Lock()
 	s.cache[ip] = cachedProfile{
 		profile:  profile,
-		expiryAt: time.Now().Add(s.cacheTTL),
+		expiryAt: time.Now().Add(ttl),
 	}
 	s.cacheMu.Unlock()
+}
+
+func (s *Service) getPersistentCached(ip string, ttl time.Duration) (node.NodeProfile, bool) {
+	if s == nil || s.engine == nil || s.engine.CacheRepo == nil {
+		return node.NodeProfile{}, false
+	}
+	entry, err := s.engine.GetEgressProfileCache(ip)
+	if err != nil || entry == nil {
+		return node.NodeProfile{}, false
+	}
+	if entry.EgressProfileUpdatedAtNs <= 0 {
+		return node.NodeProfile{}, false
+	}
+	if ttl > 0 && time.Since(time.Unix(0, entry.EgressProfileUpdatedAtNs)) > ttl {
+		return node.NodeProfile{}, false
+	}
+	parsedIP, err := netip.ParseAddr(entry.EgressIP)
+	if err != nil {
+		return node.NodeProfile{}, false
+	}
+	return node.NodeProfile{
+		IP:                 parsedIP,
+		NetworkType:        model.NormalizeEgressNetworkType(entry.EgressNetworkType),
+		ASN:                entry.EgressASN,
+		ASNName:            entry.EgressASNName,
+		ASNType:            entry.EgressASNType,
+		Provider:           entry.EgressProvider,
+		Source:             model.NormalizeEgressProfileSource(entry.EgressProfileSource),
+		ProfileUpdatedAtNs: entry.EgressProfileUpdatedAtNs,
+	}, true
+}
+
+func (s *Service) putPersistentCached(profile node.NodeProfile) {
+	if s == nil || s.engine == nil || s.engine.CacheRepo == nil || !profile.IP.IsValid() {
+		return
+	}
+	entry := model.EgressProfileCacheEntry{
+		EgressIP:                 profile.IP.String(),
+		EgressNetworkType:        string(model.NormalizeEgressNetworkType(string(profile.NetworkType))),
+		EgressASN:                profile.ASN,
+		EgressASNName:            strings.TrimSpace(profile.ASNName),
+		EgressASNType:            strings.TrimSpace(profile.ASNType),
+		EgressProvider:           strings.TrimSpace(profile.Provider),
+		EgressProfileSource:      string(model.NormalizeEgressProfileSource(string(profile.Source))),
+		EgressProfileUpdatedAtNs: profile.ProfileUpdatedAtNs,
+	}
+	if err := s.engine.UpsertEgressProfileCache(entry); err != nil {
+		log.Printf("[ipprofile] persist cache %s failed: %v", entry.EgressIP, err)
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

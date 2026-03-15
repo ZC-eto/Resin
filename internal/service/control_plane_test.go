@@ -178,6 +178,22 @@ func TestValidateRuntimeConfig_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeConfig_IPProfileFields(t *testing.T) {
+	cfg := newDefaultCfg()
+	cfg.IPProfileOnlineProvider = string(config.IPProfileOnlineProviderProxycheck)
+	cfg.IPProfileOnlineAPIKey = "demo-key"
+	cfg.IPProfileOnlineRequestsPerMinute = 240
+	cfg.IPProfileCacheTTL = config.Duration(24 * time.Hour)
+	if err := validateRuntimeConfig(cfg); err != nil {
+		t.Fatalf("validateRuntimeConfig returned error: %v", err)
+	}
+
+	cfg.IPProfileOnlineAPIKey = ""
+	if err := validateRuntimeConfig(cfg); err == nil {
+		t.Fatal("expected error when online provider is enabled without api key")
+	}
+}
+
 func TestRuntimeConfigPatchAllowlist_StaysInSyncWithRuntimeConfigJSONFields(t *testing.T) {
 	rt := reflect.TypeOf(config.RuntimeConfig{})
 	jsonFields := make(map[string]struct{})

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/probe"
 	"github.com/Resinat/Resin/internal/proxy"
@@ -57,6 +58,7 @@ type ControlPlaneService struct {
 	Router         *routing.Router
 	GeoIP          *geoip.Service
 	ProbeMgr       *probe.ProbeManager
+	ProfileSvc     *ipprofile.Service
 	MatcherRuntime *proxy.AccountMatcherRuntime
 	RuntimeCfg     *atomic.Pointer[config.RuntimeConfig]
 	EnvCfg         *config.EnvConfig
@@ -84,6 +86,13 @@ var runtimeConfigAllowedFields = map[string]bool{
 	"max_egress_test_interval":                 true,
 	"latency_test_url":                         true,
 	"latency_authorities":                      true,
+	"ip_profile_local_lookup_enabled":          true,
+	"ip_profile_online_provider":               true,
+	"ip_profile_online_api_key":                true,
+	"ip_profile_online_requests_per_minute":    true,
+	"ip_profile_cache_ttl":                     true,
+	"ip_profile_background_enabled":            true,
+	"ip_profile_refresh_on_egress_change":      true,
 	"p2c_latency_window":                       true,
 	"latency_decay_window":                     true,
 	"cache_flush_interval":                     true,
@@ -234,6 +243,18 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 	}
 	if time.Duration(cfg.MaxEgressTestInterval) < minProbeInterval {
 		return invalidArg("max_egress_test_interval: must be >= 30s")
+	}
+	cfg.IPProfileOnlineAPIKey = strings.TrimSpace(cfg.IPProfileOnlineAPIKey)
+	provider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(cfg.IPProfileOnlineProvider))
+	cfg.IPProfileOnlineProvider = string(provider)
+	if cfg.IPProfileOnlineRequestsPerMinute <= 0 {
+		return invalidArg("ip_profile_online_requests_per_minute: must be a positive integer")
+	}
+	if time.Duration(cfg.IPProfileCacheTTL) <= 0 {
+		return invalidArg("ip_profile_cache_ttl: must be positive")
+	}
+	if provider != config.IPProfileOnlineProviderDisabled && strings.TrimSpace(cfg.IPProfileOnlineAPIKey) == "" {
+		return invalidArg("ip_profile_online_api_key: required when online provider is enabled")
 	}
 	if cfg.P2CLatencyWindow < 0 {
 		return invalidArg("p2c_latency_window: must be non-negative")

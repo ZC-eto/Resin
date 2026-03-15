@@ -9,22 +9,28 @@ import (
 	"github.com/Resinat/Resin/internal/subscription"
 )
 
+type NodeReprofileBatchResult struct {
+	Requested int      `json:"requested"`
+	Accepted  int      `json:"accepted"`
+	Failed    []string `json:"failed"`
+}
+
 // ------------------------------------------------------------------
 // Nodes
 // ------------------------------------------------------------------
 
 // NodeFilters holds query filters for listing nodes.
 type NodeFilters struct {
-	PlatformID     *string
-	SubscriptionID *string
-	Region         *string
-	NetworkType    *string
-	CircuitOpen    *bool
-	HasOutbound    *bool
-	Profiled       *bool
-	EgressIP       *string
-	ProbedSince    *time.Time
-	TagKeyword     *string
+	PlatformID              *string
+	SubscriptionID          *string
+	Region                  *string
+	NetworkType             *string
+	CircuitOpen             *bool
+	HasOutbound             *bool
+	Profiled                *bool
+	EgressIP                *string
+	ProbedSince             *time.Time
+	TagKeyword              *string
 	MinQualityScore         *int
 	MaxReferenceLatencyMs   *int
 	MinEgressStabilityScore *int
@@ -263,4 +269,63 @@ func (s *ControlPlaneService) ProbeLatency(hashStr string) (*probe.LatencyProbeR
 		return nil, internal("latency probe failed", err)
 	}
 	return result, nil
+}
+
+// ReprofileNode refreshes the current node network profile based on its current egress IP.
+func (s *ControlPlaneService) ReprofileNode(hashStr string) (*NodeSummary, error) {
+	if s.ProfileSvc == nil {
+		return nil, internal("profile service unavailable", nil)
+	}
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return nil, invalidArg("node_hash: invalid format")
+	}
+	if _, err := s.ProfileSvc.ReprofileNodeSync(h, true); err != nil {
+		switch err.Error() {
+		case "node not found":
+			return nil, notFound("node not found")
+		case "node has no known egress ip":
+			return nil, conflict("node has no known egress ip")
+		default:
+			return nil, internal("reprofile node failed", err)
+		}
+	}
+	return s.GetNode(hashStr)
+}
+
+// ReprofileNodes refreshes multiple nodes synchronously.
+func (s *ControlPlaneService) ReprofileNodes(hashes []string) (*NodeReprofileBatchResult, error) {
+	if s.ProfileSvc == nil {
+		return nil, internal("profile service unavailable", nil)
+	}
+	result := &NodeReprofileBatchResult{
+		Requested: len(hashes),
+		Failed:    []string{},
+	}
+	for _, hashStr := range hashes {
+		h, err := node.ParseHex(hashStr)
+		if err != nil {
+			result.Failed = append(result.Failed, hashStr+": invalid hash")
+			continue
+		}
+		if _, err := s.ProfileSvc.ReprofileNodeSync(h, true); err != nil {
+			result.Failed = append(result.Failed, hashStr+": "+err.Error())
+			continue
+		}
+		result.Accepted++
+	}
+	return result, nil
+}
+
+// QueueReprofileKnownNodes enqueues all nodes with known egress IP for forced reprofiling.
+func (s *ControlPlaneService) QueueReprofileKnownNodes() (*NodeReprofileBatchResult, error) {
+	if s.ProfileSvc == nil {
+		return nil, internal("profile service unavailable", nil)
+	}
+	accepted := s.ProfileSvc.SeedExistingNodes(true)
+	return &NodeReprofileBatchResult{
+		Requested: accepted,
+		Accepted:  accepted,
+		Failed:    []string{},
+	}, nil
 }

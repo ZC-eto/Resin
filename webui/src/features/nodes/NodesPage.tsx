@@ -18,7 +18,7 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
+import { getNode, listNodes, probeEgress, probeLatency, reprofileNode, reprofileNodes } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
@@ -291,6 +291,7 @@ export function NodesPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
+  const [selectedNodeHashes, setSelectedNodeHashes] = useState<string[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { toasts, showToast, dismissToast } = useToast();
 
@@ -347,6 +348,9 @@ export function NodesPage() {
     unique_healthy_egress_ips: 0,
   };
   const nodes = nodesPage.items;
+  const currentPageHashes = nodes.map((item) => item.node_hash);
+  const currentPageAllSelected = currentPageHashes.length > 0 && currentPageHashes.every((hash) => selectedNodeHashes.includes(hash));
+  const currentPageSomeSelected = currentPageHashes.some((hash) => selectedNodeHashes.includes(hash));
 
   const totalPages = Math.max(1, Math.ceil(nodesPage.total / pageSize));
 
@@ -431,11 +435,62 @@ export function NodesPage() {
     await probeLatencyMutation.mutateAsync(hash);
   };
 
+  const reprofileMutation = useMutation({
+    mutationFn: async (hash: string) => reprofileNode(hash),
+    onSuccess: async (node) => {
+      await refreshNodes();
+      showToast("success", t("已重新检测网络类型：{{type}} / {{ip}}", {
+        type: networkTypeLabel(node.egress_network_type, t),
+        ip: node.egress_ip || "-",
+      }));
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const batchReprofileMutation = useMutation({
+    mutationFn: async (hashes: string[]) => reprofileNodes(hashes),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      setSelectedNodeHashes([]);
+      showToast(
+        "success",
+        t("批量重检完成：成功 {{accepted}} / {{requested}}", {
+          accepted: result.accepted,
+          requested: result.requested,
+        }),
+      );
+      if (result.failed.length) {
+        showToast("error", result.failed.slice(0, 3).join(" ; "));
+      }
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const runReprofile = async (hash: string) => {
+    await reprofileMutation.mutateAsync(hash);
+  };
+
+  const toggleHashSelection = (hash: string, checked: boolean) => {
+    setSelectedNodeHashes((prev) => {
+      if (checked) {
+        return prev.includes(hash) ? prev : [...prev, hash];
+      }
+      return prev.filter((item) => item !== hash);
+    });
+  };
+
   const handleFilterChange = (key: keyof NodeFilterDraft, value: string) => {
     setDraftFilters((prev) => {
       const next = { ...prev, [key]: value };
       setActiveFilters(draftToActiveFilters(next));
       setSelectedNodeHash("");
+      setSelectedNodeHashes([]);
       setDrawerOpen(false);
       setPage(0);
       return next;
@@ -446,6 +501,7 @@ export function NodesPage() {
     setDraftFilters(defaultFilterDraft);
     setActiveFilters(draftToActiveFilters(defaultFilterDraft));
     setSelectedNodeHash("");
+    setSelectedNodeHashes([]);
     setDrawerOpen(false);
     setPage(0);
   };
@@ -462,12 +518,53 @@ export function NodesPage() {
 
   const changePageSize = (next: number) => {
     setPageSize(next);
+    setSelectedNodeHashes([]);
     setPage(0);
   };
 
   const col = createColumnHelper<NodeSummary>();
 
   const nodeColumns = [
+    col.display({
+      id: "select",
+      header: () => (
+        <input
+          type="checkbox"
+          aria-label={t("选择当前页全部节点")}
+          checked={currentPageAllSelected}
+          ref={(element) => {
+            if (element) {
+              element.indeterminate = !currentPageAllSelected && currentPageSomeSelected;
+            }
+          }}
+          onChange={(event) => {
+            const checked = event.target.checked;
+            setSelectedNodeHashes((prev) => {
+              const next = new Set(prev);
+              if (checked) {
+                currentPageHashes.forEach((hash) => next.add(hash));
+              } else {
+                currentPageHashes.forEach((hash) => next.delete(hash));
+              }
+              return Array.from(next);
+            });
+          }}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ),
+      cell: (info) => {
+        const hash = info.row.original.node_hash;
+        return (
+          <input
+            type="checkbox"
+            aria-label={t("选择节点 {{hash}}", { hash })}
+            checked={selectedNodeHashes.includes(hash)}
+            onChange={(event) => toggleHashSelection(hash, event.target.checked)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        );
+      },
+    }),
     col.accessor((row) => firstTag(row), {
       id: "tag",
       header: () => (
@@ -600,7 +697,7 @@ export function NodesPage() {
               variant="ghost"
               title={t("触发出口探测")}
               onClick={() => void runProbeEgress(node.node_hash)}
-              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
             >
               <Globe size={14} />
             </Button>
@@ -609,9 +706,18 @@ export function NodesPage() {
               variant="ghost"
               title={t("触发延迟探测")}
               onClick={() => void runProbeLatency(node.node_hash)}
-              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
             >
               <Zap size={14} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("重新检测网络类型")}
+              onClick={() => void runReprofile(node.node_hash)}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
+            >
+              <Sparkles size={14} />
             </Button>
           </div>
         );
@@ -635,6 +741,9 @@ export function NodesPage() {
           <div>
             <h3>{t("节点列表")}</h3>
             <p>{t("共 {{total}} 个节点，{{healthy}} 个健康 IP", { total: nodesPage.total, healthy: nodesPage.unique_healthy_egress_ips })}</p>
+            {selectedNodeHashes.length ? (
+              <p className="muted">{t("已选中 {{count}} 个节点，可批量重新检测网络类型。", { count: selectedNodeHashes.length })}</p>
+            ) : null}
           </div>
 
           <div
@@ -646,6 +755,23 @@ export function NodesPage() {
               alignItems: "flex-end",
             }}
           >
+            {selectedNodeHashes.length ? (
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void batchReprofileMutation.mutateAsync(selectedNodeHashes)}
+                  disabled={batchReprofileMutation.isPending}
+                >
+                  <Sparkles size={16} />
+                  {batchReprofileMutation.isPending ? t("重检中...") : t("批量重检画像")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedNodeHashes([])}>
+                  <Eraser size={16} />
+                  {t("清空选择")}
+                </Button>
+              </div>
+            ) : null}
             <div style={NODE_FILTER_ITEM_STYLE}>
               <label htmlFor="node-tag-keyword" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                 {t("节点名")}
@@ -1106,6 +1232,19 @@ export function NodesPage() {
                       disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending}
                     >
                       {probeLatencyMutation.isPending ? t("探测中...") : t("触发延迟探测")}
+                    </Button>
+                  </div>
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("重新检测网络类型")}</h5>
+                      <p className="platform-op-hint">{t("基于当前出口 IP 重新识别住宅/机房/移动类型，并刷新质量画像。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void runReprofile(detailNode.node_hash)}
+                      disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
+                    >
+                      {reprofileMutation.isPending ? t("重检中...") : t("重新检测画像")}
                     </Button>
                   </div>
                 </div>

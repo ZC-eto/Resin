@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
 	"math"
 	"net/http"
 	"slices"
@@ -248,6 +249,48 @@ func HandleProbeLatency(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hash := PathParam(r, "hash")
 		result, err := cp.ProbeLatency(hash)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleReprofileNode returns a handler for POST /api/v1/nodes/{hash}/actions/reprofile.
+func HandleReprofileNode(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hash := PathParam(r, "hash")
+		result, err := cp.ReprofileNode(hash)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+type batchReprofileRequest struct {
+	Hashes []string `json:"hashes"`
+}
+
+// HandleBatchReprofileNodes returns a handler for POST /api/v1/nodes/actions/reprofile.
+func HandleBatchReprofileNodes(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, ok := readRawBodyOrWriteInvalid(w, r)
+		if !ok {
+			return
+		}
+		var req batchReprofileRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeInvalidArgument(w, "invalid JSON: "+err.Error())
+			return
+		}
+		if len(req.Hashes) == 0 {
+			writeInvalidArgument(w, "hashes: must not be empty")
+			return
+		}
+		result, err := cp.ReprofileNodes(req.Hashes)
 		if err != nil {
 			writeServiceError(w, err)
 			return
