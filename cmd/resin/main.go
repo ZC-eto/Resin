@@ -368,7 +368,15 @@ func newTopologyRuntime(
 		probeMgr.TriggerImmediateEgressProbe(hash)
 		profileSvc.Enqueue(hash)
 	})
+	pool.SetOnNodeEgressIPChanged(func(_ node.Hash, oldIP, _ netip.Addr) {
+		if oldIP.IsValid() {
+			profileSvc.DeleteCachedIPIfUnused(oldIP)
+		}
+	})
 	pool.SetOnNodeRemoved(func(hash node.Hash, entry *node.NodeEntry) {
+		if entry != nil {
+			profileSvc.DeleteCachedIPIfUnused(entry.GetEgressIP())
+		}
 		markNodeRemovedDirty(engine, hash, entry)
 		outboundMgr.RemoveNodeOutbound(entry)
 		if entry != nil && entry.LatencyTable != nil {

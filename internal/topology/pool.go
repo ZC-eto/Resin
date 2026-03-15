@@ -42,8 +42,9 @@ type GlobalNodePool struct {
 	onSubNodeChanged func(subID string, hash node.Hash, added bool)
 
 	// Health callbacks (optional).
-	onNodeDynamicChanged func(hash node.Hash)                // fired on circuit/failure/egress changes
-	onNodeLatencyChanged func(hash node.Hash, domain string) // fired on latency upserts and evictions
+	onNodeDynamicChanged  func(hash node.Hash)                // fired on circuit/failure/egress changes
+	onNodeLatencyChanged  func(hash node.Hash, domain string) // fired on latency upserts and evictions
+	onNodeEgressIPChanged func(hash node.Hash, oldIP, newIP netip.Addr)
 
 	// Health config
 	maxLatencyTableEntries int
@@ -61,6 +62,7 @@ type PoolConfig struct {
 	OnSubNodeChanged       func(subID string, hash node.Hash, added bool)
 	OnNodeDynamicChanged   func(hash node.Hash)
 	OnNodeLatencyChanged   func(hash node.Hash, domain string)
+	OnNodeEgressIPChanged  func(hash node.Hash, oldIP, newIP netip.Addr)
 	MaxLatencyTableEntries int
 	MaxConsecutiveFailures func() int
 	LatencyDecayWindow     func() time.Duration
@@ -90,6 +92,7 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 		onSubNodeChanged:       cfg.OnSubNodeChanged,
 		onNodeDynamicChanged:   cfg.OnNodeDynamicChanged,
 		onNodeLatencyChanged:   cfg.OnNodeLatencyChanged,
+		onNodeEgressIPChanged:  cfg.OnNodeEgressIPChanged,
 		maxLatencyTableEntries: cfg.MaxLatencyTableEntries,
 		maxConsecutiveFailures: maxConsecutiveFailuresFn,
 		latencyDecayWindow:     cfg.LatencyDecayWindow,
@@ -457,6 +460,12 @@ func (p *GlobalNodePool) SetOnNodeRemoved(fn func(hash node.Hash, entry *node.No
 	p.onNodeRemoved = fn
 }
 
+// SetOnNodeEgressIPChanged sets the callback fired when a node's egress IP changes.
+// Must be called before any background workers are started.
+func (p *GlobalNodePool) SetOnNodeEgressIPChanged(fn func(hash node.Hash, oldIP, newIP netip.Addr)) {
+	p.onNodeEgressIPChanged = fn
+}
+
 // NotifyNodeDirty triggers platform re-evaluation for a single node.
 // Used by OutboundManager after outbound creation to update routable views.
 func (p *GlobalNodePool) NotifyNodeDirty(hash node.Hash) {
@@ -634,6 +643,9 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 
 	if ipChanged || regionChanged {
 		p.notifyAllPlatformsDirty(hash)
+	}
+	if ipChanged && p.onNodeEgressIPChanged != nil {
+		p.onNodeEgressIPChanged(hash, oldIP, *ip)
 	}
 	if entry.RefreshQuality(p.currentLatencyAuthorities()) {
 		dynamicChanged = true

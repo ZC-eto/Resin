@@ -65,9 +65,23 @@ func TestRepairConsistency_RemovesOrphans(t *testing.T) {
 		{SubscriptionID: "s1", NodeHash: "evicted-missing-static", Tags: []string{"y"}, Evicted: true},
 	})
 	cacheRepo.BulkUpsertNodesDynamic([]model.NodeDynamic{
-		{Hash: "valid-node"},
+		{Hash: "valid-node", EgressIP: "198.51.100.10"},
 		{Hash: "orphan-dynamic"}, // no static ref
 	})
+	if err := cacheRepo.UpsertEgressProfileCache(model.EgressProfileCacheEntry{
+		EgressIP:                 "198.51.100.10",
+		EgressNetworkType:        string(model.EgressNetworkTypeResidential),
+		EgressProfileUpdatedAtNs: 1,
+	}); err != nil {
+		t.Fatalf("UpsertEgressProfileCache valid: %v", err)
+	}
+	if err := cacheRepo.UpsertEgressProfileCache(model.EgressProfileCacheEntry{
+		EgressIP:                 "198.51.100.11",
+		EgressNetworkType:        string(model.EgressNetworkTypeDatacenter),
+		EgressProfileUpdatedAtNs: 1,
+	}); err != nil {
+		t.Fatalf("UpsertEgressProfileCache orphan: %v", err)
+	}
 	cacheRepo.BulkUpsertNodeLatency([]model.NodeLatency{
 		{NodeHash: "valid-node", Domain: "google.com", EwmaNs: 100, LastUpdatedNs: 1},
 		{NodeHash: "orphan-latency-node", Domain: "google.com", EwmaNs: 200, LastUpdatedNs: 1}, // no static ref
@@ -128,6 +142,21 @@ func TestRepairConsistency_RemovesOrphans(t *testing.T) {
 	if len(leases) != 1 || leases[0].Account != "user1" {
 		t.Fatalf("expected only user1 lease, got %+v", leases)
 	}
+
+	validProfile, err := cacheRepo.GetEgressProfileCache("198.51.100.10")
+	if err != nil {
+		t.Fatalf("GetEgressProfileCache valid: %v", err)
+	}
+	if validProfile == nil {
+		t.Fatal("expected referenced egress profile cache to survive")
+	}
+	orphanProfile, err := cacheRepo.GetEgressProfileCache("198.51.100.11")
+	if err != nil {
+		t.Fatalf("GetEgressProfileCache orphan: %v", err)
+	}
+	if orphanProfile != nil {
+		t.Fatalf("expected orphan egress profile cache to be deleted, got %+v", orphanProfile)
+	}
 }
 
 func TestRepairConsistency_ValidRecordsSurvive(t *testing.T) {
@@ -170,8 +199,15 @@ func TestRepairConsistency_ValidRecordsSurvive(t *testing.T) {
 		{SubscriptionID: "s1", NodeHash: "n1", Tags: []string{"t1"}},
 	})
 	cacheRepo.BulkUpsertNodesDynamic([]model.NodeDynamic{
-		{Hash: "n1", FailureCount: 1},
+		{Hash: "n1", FailureCount: 1, EgressIP: "203.0.113.20"},
 	})
+	if err := cacheRepo.UpsertEgressProfileCache(model.EgressProfileCacheEntry{
+		EgressIP:                 "203.0.113.20",
+		EgressNetworkType:        string(model.EgressNetworkTypeResidential),
+		EgressProfileUpdatedAtNs: 1,
+	}); err != nil {
+		t.Fatalf("UpsertEgressProfileCache: %v", err)
+	}
 	cacheRepo.BulkUpsertNodeLatency([]model.NodeLatency{
 		{NodeHash: "n1", Domain: "example.com", EwmaNs: 500, LastUpdatedNs: 1},
 	})
@@ -191,5 +227,12 @@ func TestRepairConsistency_ValidRecordsSurvive(t *testing.T) {
 	if len(nodes) != 1 || len(sns) != 1 || len(dyn) != 1 || len(lat) != 1 || len(leases) != 1 {
 		t.Fatalf("valid records should survive: nodes=%d sns=%d dyn=%d lat=%d leases=%d",
 			len(nodes), len(sns), len(dyn), len(lat), len(leases))
+	}
+	profile, err := cacheRepo.GetEgressProfileCache("203.0.113.20")
+	if err != nil {
+		t.Fatalf("GetEgressProfileCache: %v", err)
+	}
+	if profile == nil {
+		t.Fatal("expected referenced egress profile cache to survive")
 	}
 }

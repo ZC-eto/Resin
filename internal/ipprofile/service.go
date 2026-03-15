@@ -688,6 +688,42 @@ func (s *Service) putPersistentCached(profile node.NodeProfile) {
 	}
 }
 
+func (s *Service) DeleteCachedIPIfUnused(ip netip.Addr) bool {
+	if s == nil || !ip.IsValid() {
+		return false
+	}
+	ipStr := ip.String()
+	if s.pool != nil {
+		inUse := false
+		s.pool.RangeNodes(func(_ node.Hash, entry *node.NodeEntry) bool {
+			if entry == nil {
+				return true
+			}
+			if entry.GetEgressIP() == ip {
+				inUse = true
+				return false
+			}
+			return true
+		})
+		if inUse {
+			return false
+		}
+	}
+
+	s.cacheMu.Lock()
+	delete(s.cache, ipStr)
+	s.cacheMu.Unlock()
+
+	if s.engine == nil || s.engine.CacheRepo == nil {
+		return true
+	}
+	if err := s.engine.DeleteEgressProfileCache(ipStr); err != nil {
+		log.Printf("[ipprofile] delete cache %s failed: %v", ipStr, err)
+		return false
+	}
+	return true
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
