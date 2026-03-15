@@ -250,9 +250,6 @@ func (a *resinApp) bootstrapFromPersistence(engine *state.StateEngine) error {
 	// DESIGN.md requires step 6 (rebuild) before step 7 (leases).
 	a.topoRuntime.pool.RebuildAllPlatforms()
 	log.Println("Platform rebuild complete")
-	if a.topoRuntime.profileSvc != nil {
-		a.topoRuntime.profileSvc.SeedExistingNodes()
-	}
 
 	// Phase 9: Restore leases (AFTER rebuild so platform views are populated).
 	leases, err := engine.LoadAllLeases()
@@ -334,6 +331,7 @@ func (a *resinApp) startBackgroundServices() {
 	log.Println("Metrics manager started (batch 1)")
 	if a.topoRuntime.profileSvc != nil {
 		a.topoRuntime.profileSvc.Start()
+		a.topoRuntime.profileSvc.SeedExistingNodes()
 		log.Println("IP profile service started (batch 1)")
 	}
 
