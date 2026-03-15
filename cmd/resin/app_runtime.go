@@ -250,6 +250,9 @@ func (a *resinApp) bootstrapFromPersistence(engine *state.StateEngine) error {
 	// DESIGN.md requires step 6 (rebuild) before step 7 (leases).
 	a.topoRuntime.pool.RebuildAllPlatforms()
 	log.Println("Platform rebuild complete")
+	if a.topoRuntime.profileSvc != nil {
+		a.topoRuntime.profileSvc.SeedExistingNodes()
+	}
 
 	// Phase 9: Restore leases (AFTER rebuild so platform views are populated).
 	leases, err := engine.LoadAllLeases()
@@ -329,6 +332,10 @@ func (a *resinApp) startBackgroundServices() {
 
 	a.metricsManager.Start()
 	log.Println("Metrics manager started (batch 1)")
+	if a.topoRuntime.profileSvc != nil {
+		a.topoRuntime.profileSvc.Start()
+		log.Println("IP profile service started (batch 1)")
+	}
 
 	// --- Step 8 Batch 2: ProbeManager, RequestLog, LeaseCleaner, EphemeralCleaner ---
 	a.topoRuntime.probeMgr.SetOnProbeEvent(func(kind string) {
@@ -539,6 +546,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.topoRuntime.probeMgr.Stop()
 	log.Println("Probe manager stopped")
+
+	if a.topoRuntime.profileSvc != nil {
+		a.topoRuntime.profileSvc.Stop()
+		log.Println("IP profile service stopped")
+	}
 
 	a.geoSvc.Stop()
 	log.Println("GeoIP service stopped")

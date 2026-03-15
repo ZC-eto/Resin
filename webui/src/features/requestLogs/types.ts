@@ -17,6 +17,11 @@ export type RequestLogItem = {
   node_tag: string;
   egress_ip: string;
   previous_egress_ip: string;
+  egress_network_type: string;
+  egress_asn: number;
+  egress_asn_name: string;
+  quality_score: number;
+  quality_grade: string;
   duration_ms: number;
   net_ok: boolean;
   http_method: string;
@@ -53,9 +58,11 @@ export type RequestLogListFilters = {
   account?: string;
   target_host?: string;
   egress_ip?: string;
+  egress_network_type?: string;
   proxy_type?: number;
   net_ok?: boolean;
   http_status?: number;
+  min_quality_score?: number;
   limit: number;
   cursor?: string;
   fuzzy?: boolean;

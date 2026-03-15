@@ -17,6 +17,7 @@ import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatGoDuration, formatRelativeTime } from "../../lib/time";
+import { listSubscriptions } from "../subscriptions/api";
 import { createPlatform, listPlatforms } from "./api";
 import {
   allocationPolicies,
@@ -34,6 +35,7 @@ import {
   platformFormSchema,
   platformNameRuleHint,
   toPlatformCreateInput,
+  type PlatformFormInput,
   type PlatformFormValues,
 } from "./formModel";
 import type { Platform } from "./types";
@@ -41,6 +43,12 @@ import type { Platform } from "./types";
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 const EMPTY_PLATFORMS: Platform[] = [];
 const PAGE_SIZE_OPTIONS = [12, 24, 48, 96] as const;
+const NETWORK_TYPE_OPTIONS = [
+  { value: "RESIDENTIAL", label: "家宽 / 住宅" },
+  { value: "DATACENTER", label: "机房" },
+  { value: "MOBILE", label: "移动网络" },
+  { value: "UNKNOWN", label: "未知" },
+] as const;
 
 export function PlatformPage() {
   const { t } = useI18n();
@@ -71,20 +79,31 @@ export function PlatformPage() {
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   });
+  const subscriptionsQuery = useQuery({
+    queryKey: ["subscriptions", "all", "platform-create"],
+    queryFn: async () => {
+      const data = await listSubscriptions({ limit: 100000, offset: 0 });
+      return data.items;
+    },
+    staleTime: 60_000,
+  });
 
   const platforms = platformsQuery.data?.items ?? EMPTY_PLATFORMS;
+  const subscriptions = subscriptionsQuery.data ?? [];
 
   const totalPlatforms = platformsQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalPlatforms / pageSize));
   const currentPage = Math.min(page, totalPages - 1);
 
-  const createForm = useForm<PlatformFormValues>({
+  const createForm = useForm<PlatformFormInput, unknown, PlatformFormValues>({
     resolver: zodResolver(platformFormSchema),
     defaultValues: defaultPlatformFormValues,
   });
   const createEmptyAccountBehavior = createForm.watch("reverse_proxy_empty_account_behavior");
   const createProxyAccessMode = createForm.watch("proxy_access_mode");
   const createRotationPolicy = createForm.watch("rotation_policy");
+  const createSubscriptionFilters = createForm.watch("subscription_filters") ?? [];
+  const createNetworkTypeFilters = createForm.watch("network_type_filters") ?? [];
 
   const createMutation = useMutation({
     mutationFn: createPlatform,
@@ -413,6 +432,84 @@ export function PlatformPage() {
                   {t("地区过滤规则（可选）")}
                 </label>
                 <Textarea id="create-region" rows={4} placeholder={t("每行一条，如 hk / us")} {...createForm.register("region_filters_text")} />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">{t("订阅来源过滤（可选）")}</label>
+                <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  {subscriptions.map((subscription) => {
+                    const checked = createSubscriptionFilters.includes(subscription.id);
+                    return (
+                      <label key={subscription.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...createSubscriptionFilters, subscription.id]
+                              : createSubscriptionFilters.filter((value) => value !== subscription.id);
+                            createForm.setValue("subscription_filters", next, { shouldDirty: true });
+                          }}
+                        />
+                        <span>{subscription.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                  {t("不勾选表示允许所有订阅来源。")}
+                </p>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">{t("网络类型过滤（可选）")}</label>
+                <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  {NETWORK_TYPE_OPTIONS.map((option) => {
+                    const checked = createNetworkTypeFilters.includes(option.value);
+                    return (
+                      <label key={option.value} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...createNetworkTypeFilters, option.value]
+                              : createNetworkTypeFilters.filter((value) => value !== option.value);
+                            createForm.setValue("network_type_filters", next, { shouldDirty: true });
+                          }}
+                        />
+                        <span>{t(option.label)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-min-quality-score">
+                  {t("最低质量分（可选）")}
+                </label>
+                <Input id="create-min-quality-score" type="number" min={0} max={100} {...createForm.register("min_quality_score")} />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-max-reference-latency">
+                  {t("最大参考延迟 (ms)")}</label>
+                <Input id="create-max-reference-latency" type="number" min={0} {...createForm.register("max_reference_latency_ms")} />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-min-stability-score">
+                  {t("最低出口稳定性分")}
+                </label>
+                <Input id="create-min-stability-score" type="number" min={0} max={20} {...createForm.register("min_egress_stability_score")} />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-max-circuit-open-count">
+                  {t("最大累计熔断次数")}
+                </label>
+                <Input id="create-max-circuit-open-count" type="number" min={0} {...createForm.register("max_circuit_open_count")} />
               </div>
 
               <div className="detail-actions">

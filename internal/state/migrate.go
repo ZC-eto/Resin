@@ -25,6 +25,7 @@ const (
 	stateVersionNormalizeMissAction     = 4
 	stateVersionAddProxyAccessMode      = 5
 	stateVersionAddRotationPolicy       = 6
+	stateVersionAddAdvancedPlatformFilters = 7
 	stateLegacyBaselineVersion          = stateVersionAddFixedAccountHeader
 )
 
@@ -118,8 +119,14 @@ func prepareLegacyStateBaseline(db *sql.DB, driver migratedb.Driver) error {
 	if err != nil {
 		return err
 	}
+	hasSubscriptionFilters, err := hasTableColumn(db, "platforms", "subscription_filters_json")
+	if err != nil {
+		return err
+	}
 
 	switch {
+	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval && hasSubscriptionFilters:
+		return setMigrationVersion(driver, stateVersionAddAdvancedPlatformFilters)
 	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval:
 		return setMigrationVersion(driver, stateVersionAddRotationPolicy)
 	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode:

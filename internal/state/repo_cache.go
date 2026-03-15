@@ -86,6 +86,20 @@ func (r *CacheRepo) BulkUpsertNodesDynamic(nodes []model.NodeDynamic) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				n.EgressNetworkType,
+				n.EgressASN,
+				n.EgressASNName,
+				n.EgressASNType,
+				n.EgressProvider,
+				n.EgressProfileSource,
+				n.EgressProfileUpdatedAtNs,
+				n.QualityScore,
+				n.QualityGrade,
+				n.EgressProbeSuccessCountTotal,
+				n.EgressProbeFailureCountTotal,
+				n.EgressIPChangeCountTotal,
+				n.LastEgressIPChangeAtNs,
+				n.CircuitOpenCountTotal,
 			)
 			return err
 		},
@@ -109,7 +123,11 @@ func (r *CacheRepo) BulkDeleteNodesDynamic(hashes []string) error {
 func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	rows, err := r.db.Query(`
 		SELECT hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns
+		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+		       egress_network_type, egress_asn, egress_asn_name, egress_asn_type, egress_provider,
+		       egress_profile_source, egress_profile_updated_at_ns, quality_score, quality_grade,
+		       egress_probe_success_count_total, egress_probe_failure_count_total, egress_ip_change_count_total,
+		       last_egress_ip_change_at_ns, circuit_open_count_total
 		FROM nodes_dynamic`)
 	if err != nil {
 		return nil, err
@@ -129,6 +147,20 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 			&n.LastLatencyProbeAttemptNs,
 			&n.LastAuthorityLatencyProbeAttemptNs,
 			&n.LastEgressUpdateAttemptNs,
+			&n.EgressNetworkType,
+			&n.EgressASN,
+			&n.EgressASNName,
+			&n.EgressASNType,
+			&n.EgressProvider,
+			&n.EgressProfileSource,
+			&n.EgressProfileUpdatedAtNs,
+			&n.QualityScore,
+			&n.QualityGrade,
+			&n.EgressProbeSuccessCountTotal,
+			&n.EgressProbeFailureCountTotal,
+			&n.EgressIPChangeCountTotal,
+			&n.LastEgressIPChangeAtNs,
+			&n.CircuitOpenCountTotal,
 		); err != nil {
 			return nil, err
 		}
@@ -398,6 +430,20 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				n.EgressNetworkType,
+				n.EgressASN,
+				n.EgressASNName,
+				n.EgressASNType,
+				n.EgressProvider,
+				n.EgressProfileSource,
+				n.EgressProfileUpdatedAtNs,
+				n.QualityScore,
+				n.QualityGrade,
+				n.EgressProbeSuccessCountTotal,
+				n.EgressProbeFailureCountTotal,
+				n.EgressIPChangeCountTotal,
+				n.LastEgressIPChangeAtNs,
+				n.CircuitOpenCountTotal,
 			)
 			return err
 		}},
@@ -453,9 +499,13 @@ const (
 
 	upsertNodesDynamicSQL = `INSERT INTO nodes_dynamic (
 			hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns
+			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+			egress_network_type, egress_asn, egress_asn_name, egress_asn_type, egress_provider,
+			egress_profile_source, egress_profile_updated_at_ns, quality_score, quality_grade,
+			egress_probe_success_count_total, egress_probe_failure_count_total, egress_ip_change_count_total,
+			last_egress_ip_change_at_ns, circuit_open_count_total
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(hash) DO UPDATE SET
 			failure_count                          = excluded.failure_count,
 			circuit_open_since                     = excluded.circuit_open_since,
@@ -464,7 +514,21 @@ const (
 			egress_updated_at_ns                   = excluded.egress_updated_at_ns,
 			last_latency_probe_attempt_ns          = excluded.last_latency_probe_attempt_ns,
 			last_authority_latency_probe_attempt_ns = excluded.last_authority_latency_probe_attempt_ns,
-			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns`
+			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns,
+			egress_network_type                    = excluded.egress_network_type,
+			egress_asn                             = excluded.egress_asn,
+			egress_asn_name                        = excluded.egress_asn_name,
+			egress_asn_type                        = excluded.egress_asn_type,
+			egress_provider                        = excluded.egress_provider,
+			egress_profile_source                  = excluded.egress_profile_source,
+			egress_profile_updated_at_ns           = excluded.egress_profile_updated_at_ns,
+			quality_score                          = excluded.quality_score,
+			quality_grade                          = excluded.quality_grade,
+			egress_probe_success_count_total       = excluded.egress_probe_success_count_total,
+			egress_probe_failure_count_total       = excluded.egress_probe_failure_count_total,
+			egress_ip_change_count_total           = excluded.egress_ip_change_count_total,
+			last_egress_ip_change_at_ns            = excluded.last_egress_ip_change_at_ns,
+			circuit_open_count_total               = excluded.circuit_open_count_total`
 
 	upsertNodeLatencySQL = `INSERT INTO node_latency (node_hash, domain, ewma_ns, last_updated_ns)
 		 VALUES (?, ?, ?, ?)

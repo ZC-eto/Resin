@@ -60,6 +60,11 @@ type RequestLogEntry struct {
 	NodeTag         string // display tag: "<Subscription>/<Tag>" (DESIGN.md §601)
 	EgressIP        string
 	PreviousEgressIP string
+	EgressNetworkType string
+	EgressASN       int64
+	EgressASNName   string
+	QualityScore    int
+	QualityGrade    string
 	DurationNs      int64
 	NetOK           bool
 	HTTPMethod      string

@@ -3,6 +3,60 @@ package model
 
 import "encoding/json"
 
+type EgressNetworkType string
+
+const (
+	EgressNetworkTypeUnknown     EgressNetworkType = "UNKNOWN"
+	EgressNetworkTypeResidential EgressNetworkType = "RESIDENTIAL"
+	EgressNetworkTypeDatacenter  EgressNetworkType = "DATACENTER"
+	EgressNetworkTypeMobile      EgressNetworkType = "MOBILE"
+)
+
+func NormalizeEgressNetworkType(raw string) EgressNetworkType {
+	switch EgressNetworkType(raw) {
+	case EgressNetworkTypeResidential, EgressNetworkTypeDatacenter, EgressNetworkTypeMobile:
+		return EgressNetworkType(raw)
+	default:
+		return EgressNetworkTypeUnknown
+	}
+}
+
+type EgressProfileSource string
+
+const (
+	EgressProfileSourceUnknown        EgressProfileSource = ""
+	EgressProfileSourceLocal          EgressProfileSource = "LOCAL"
+	EgressProfileSourceOnline         EgressProfileSource = "ONLINE"
+	EgressProfileSourceLocalPlusOnline EgressProfileSource = "LOCAL_PLUS_ONLINE"
+)
+
+func NormalizeEgressProfileSource(raw string) EgressProfileSource {
+	switch EgressProfileSource(raw) {
+	case EgressProfileSourceLocal, EgressProfileSourceOnline, EgressProfileSourceLocalPlusOnline:
+		return EgressProfileSource(raw)
+	default:
+		return EgressProfileSourceUnknown
+	}
+}
+
+type QualityGrade string
+
+const (
+	QualityGradeA QualityGrade = "A"
+	QualityGradeB QualityGrade = "B"
+	QualityGradeC QualityGrade = "C"
+	QualityGradeD QualityGrade = "D"
+)
+
+func NormalizeQualityGrade(raw string) QualityGrade {
+	switch QualityGrade(raw) {
+	case QualityGradeA, QualityGradeB, QualityGradeC, QualityGradeD:
+		return QualityGrade(raw)
+	default:
+		return QualityGradeD
+	}
+}
+
 // Platform represents a routing platform.
 type Platform struct {
 	ID                               string `json:"id"`
@@ -13,6 +67,12 @@ type Platform struct {
 	RotationIntervalNs               int64  `json:"rotation_interval_ns"`
 	RegexFilters                     []string
 	RegionFilters                    []string
+	SubscriptionFilters              []string
+	NetworkTypeFilters               []string
+	MinQualityScore                  *int `json:"min_quality_score,omitempty"`
+	MaxReferenceLatencyMs            *int `json:"max_reference_latency_ms,omitempty"`
+	MinEgressStabilityScore          *int `json:"min_egress_stability_score,omitempty"`
+	MaxCircuitOpenCount              *int `json:"max_circuit_open_count,omitempty"`
 	ReverseProxyMissAction           string `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   string `json:"reverse_proxy_fixed_account_header"`
@@ -60,6 +120,20 @@ type NodeDynamic struct {
 	LastLatencyProbeAttemptNs          int64  `json:"last_latency_probe_attempt_ns"`
 	LastAuthorityLatencyProbeAttemptNs int64  `json:"last_authority_latency_probe_attempt_ns"`
 	LastEgressUpdateAttemptNs          int64  `json:"last_egress_update_attempt_ns"`
+	EgressNetworkType                  string `json:"egress_network_type"`
+	EgressASN                          int64  `json:"egress_asn"`
+	EgressASNName                      string `json:"egress_asn_name"`
+	EgressASNType                      string `json:"egress_asn_type"`
+	EgressProvider                     string `json:"egress_provider"`
+	EgressProfileSource                string `json:"egress_profile_source"`
+	EgressProfileUpdatedAtNs           int64  `json:"egress_profile_updated_at_ns"`
+	QualityScore                       int    `json:"quality_score"`
+	QualityGrade                       string `json:"quality_grade"`
+	EgressProbeSuccessCountTotal       int64  `json:"egress_probe_success_count_total"`
+	EgressProbeFailureCountTotal       int64  `json:"egress_probe_failure_count_total"`
+	EgressIPChangeCountTotal           int64  `json:"egress_ip_change_count_total"`
+	LastEgressIPChangeAtNs             int64  `json:"last_egress_ip_change_at_ns"`
+	CircuitOpenCountTotal              int64  `json:"circuit_open_count_total"`
 }
 
 // NodeLatency holds per-domain latency statistics for a node.

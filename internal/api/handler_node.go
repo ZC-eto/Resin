@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,10 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 		order = cmp.Compare(a.FailureCount, b.FailureCount)
 	case "region":
 		order = strings.Compare(a.Region, b.Region)
+	case "quality_score":
+		order = cmp.Compare(a.QualityScore, b.QualityScore)
+	case "reference_latency_ms":
+		order = cmp.Compare(displayableLatency(a.ReferenceLatencyMs), displayableLatency(b.ReferenceLatencyMs))
 	default:
 		order = strings.Compare(nodeTagSortKey(a), nodeTagSortKey(b))
 	}
@@ -46,6 +51,13 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 		return order
 	}
 	return strings.Compare(a.NodeHash, b.NodeHash)
+}
+
+func displayableLatency(value *float64) float64 {
+	if value == nil {
+		return math.MaxFloat64
+	}
+	return *value
 }
 
 func sortNodeSummaries(nodes []service.NodeSummary, sorting Sorting) {
@@ -109,6 +121,9 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 		if v := q.Get("region"); v != "" {
 			filters.Region = &v
 		}
+		if v := q.Get("network_type"); v != "" {
+			filters.NetworkType = &v
+		}
 		if v := q.Get("egress_ip"); v != "" {
 			filters.EgressIP = &v
 		}
@@ -127,6 +142,11 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			return
 		}
 		filters.HasOutbound = hasOutbound
+		profiled, ok := parseBoolQueryOrWriteInvalid(w, r, "profiled")
+		if !ok {
+			return
+		}
+		filters.Profiled = profiled
 
 		if v := q.Get("probed_since"); v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)
@@ -136,6 +156,26 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			}
 			filters.ProbedSince = &t
 		}
+		if value, ok := parseOptionalNonNegativeIntQuery(w, r, "min_quality_score"); !ok {
+			return
+		} else {
+			filters.MinQualityScore = value
+		}
+		if value, ok := parseOptionalNonNegativeIntQuery(w, r, "max_reference_latency_ms"); !ok {
+			return
+		} else {
+			filters.MaxReferenceLatencyMs = value
+		}
+		if value, ok := parseOptionalNonNegativeIntQuery(w, r, "min_egress_stability_score"); !ok {
+			return
+		} else {
+			filters.MinEgressStabilityScore = value
+		}
+		if value, ok := parseOptionalNonNegativeIntQuery(w, r, "max_circuit_open_count"); !ok {
+			return
+		} else {
+			filters.MaxCircuitOpenCount = value
+		}
 
 		nodes, err := cp.ListNodes(filters)
 		if err != nil {
@@ -143,7 +183,7 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			return
 		}
 
-		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{"tag", "created_at", "failure_count", "region"}, "tag", "asc")
+		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{"tag", "created_at", "failure_count", "region", "quality_score", "reference_latency_ms"}, "tag", "asc")
 		if !ok {
 			return
 		}
@@ -162,6 +202,19 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			UniqueHealthyEgressIPs: countUniqueHealthyEgressIPs(nodes),
 		})
 	}
+}
+
+func parseOptionalNonNegativeIntQuery(w http.ResponseWriter, r *http.Request, key string) (*int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		writeInvalidArgument(w, key+": must be a non-negative integer")
+		return nil, false
+	}
+	return &value, true
 }
 
 // HandleGetNode returns a handler for GET /api/v1/nodes/{hash}.

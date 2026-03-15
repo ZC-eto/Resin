@@ -37,6 +37,7 @@ func HandleListRequestLogs(repo *requestlog.Repo) http.Handler {
 			Account:      q.Get("account"),
 			TargetHost:   q.Get("target_host"),
 			EgressIP:     q.Get("egress_ip"),
+			EgressNetworkType: q.Get("egress_network_type"),
 			Limit:        limit,
 			Cursor:       cursor,
 		}
@@ -79,6 +80,11 @@ func HandleListRequestLogs(repo *requestlog.Repo) http.Handler {
 			return
 		}
 		f.HTTPStatus = httpStatus
+		minQualityScore, ok := parseBoundedIntQuery(w, r, "min_quality_score", 0, 100, "min_quality_score: must be in [0,100]")
+		if !ok {
+			return
+		}
+		f.MinQualityScore = minQualityScore
 
 		fuzzy, ok := parseStrictBoolQuery(w, r, "fuzzy")
 		if !ok {
@@ -297,6 +303,11 @@ type logListItem struct {
 	NodeTag              string `json:"node_tag"`
 	EgressIP             string `json:"egress_ip"`
 	PreviousEgressIP     string `json:"previous_egress_ip"`
+	EgressNetworkType    string `json:"egress_network_type"`
+	EgressASN            int64  `json:"egress_asn"`
+	EgressASNName        string `json:"egress_asn_name"`
+	QualityScore         int    `json:"quality_score"`
+	QualityGrade         string `json:"quality_grade"`
 	DurationMs           int64  `json:"duration_ms"`
 	NetOK                bool   `json:"net_ok"`
 	HTTPMethod           string `json:"http_method"`
@@ -339,6 +350,11 @@ func toLogListItem(s requestlog.LogSummary) logListItem {
 		NodeTag:              s.NodeTag,
 		EgressIP:             s.EgressIP,
 		PreviousEgressIP:     s.PreviousEgressIP,
+		EgressNetworkType:    s.EgressNetworkType,
+		EgressASN:            s.EgressASN,
+		EgressASNName:        s.EgressASNName,
+		QualityScore:         s.QualityScore,
+		QualityGrade:         s.QualityGrade,
 		DurationMs:           s.DurationNs / 1e6,
 		NetOK:                s.NetOK,
 		HTTPMethod:           s.HTTPMethod,

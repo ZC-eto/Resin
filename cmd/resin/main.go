@@ -17,6 +17,7 @@ import (
 	"github.com/Resinat/Resin/internal/buildinfo"
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/netutil"
@@ -38,6 +39,7 @@ type topologyRuntime struct {
 	probeMgr         *probe.ProbeManager
 	scheduler        *topology.SubscriptionScheduler
 	ephemeralCleaner *topology.EphemeralCleaner
+	profileSvc       *ipprofile.Service
 	router           *routing.Router
 	leaseCleaner     *routing.LeaseCleaner
 	outboundMgr      *outbound.OutboundManager
@@ -268,6 +270,17 @@ func newTopologyRuntime(
 	}
 	outboundMgr := outbound.NewOutboundManager(pool, singboxBuilder)
 
+	profileSvc := ipprofile.NewService(ipprofile.Config{
+		Pool:                    pool,
+		LocalASNMMDBPath:        envCfg.IPinfoASNMMDBPath,
+		LocalPrivacyMMDBPath:    envCfg.IPinfoPrivacyMMDBPath,
+		IPinfoToken:             envCfg.IPinfoToken,
+		OnlineRequestsPerMinute: envCfg.IPProfileOnlineRequestsPerMinute,
+		CacheTTL:                envCfg.IPProfileCacheTTL,
+		BackgroundEnabled:       envCfg.IPProfileBackgroundEnabled,
+		BackgroundBatchSize:     envCfg.IPProfileBackgroundBatchSize,
+	})
+
 	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
 		Pool:        pool,
 		Concurrency: envCfg.ProbeConcurrency,
@@ -306,6 +319,9 @@ func newTopologyRuntime(
 		LatencyAuthorities: func() []string {
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
 		},
+		OnEgressSample: func(hash node.Hash, _ netip.Addr) {
+			profileSvc.Enqueue(hash)
+		},
 	})
 
 	pool.SetOnNodeAdded(func(hash node.Hash) {
@@ -313,6 +329,7 @@ func newTopologyRuntime(
 		outboundMgr.EnsureNodeOutbound(hash)
 		// No NotifyNodeDirty here — AddNodeFromSub already notifies all platforms.
 		probeMgr.TriggerImmediateEgressProbe(hash)
+		profileSvc.Enqueue(hash)
 	})
 	pool.SetOnNodeRemoved(func(hash node.Hash, entry *node.NodeEntry) {
 		markNodeRemovedDirty(engine, hash, entry)
@@ -345,6 +362,7 @@ func newTopologyRuntime(
 		probeMgr:         probeMgr,
 		scheduler:        scheduler,
 		ephemeralCleaner: ephemeralCleaner,
+		profileSvc:       profileSvc,
 		outboundMgr:      outboundMgr,
 		singboxBuilder:   singboxBuilder,
 	}, nil
@@ -528,6 +546,20 @@ func newFlushReaders(
 				LastLatencyProbeAttemptNs:          entry.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: entry.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          entry.LastEgressUpdateAttempt.Load(),
+				EgressNetworkType:                  string(entry.GetEgressNetworkType()),
+				EgressASN:                          entry.GetEgressASN(),
+				EgressASNName:                      entry.GetEgressASNName(),
+				EgressASNType:                      entry.GetEgressASNType(),
+				EgressProvider:                     entry.GetEgressProvider(),
+				EgressProfileSource:                string(entry.GetEgressProfileSource()),
+				EgressProfileUpdatedAtNs:           entry.LastEgressProfileUpdated.Load(),
+				QualityScore:                       int(entry.QualityScore.Load()),
+				QualityGrade:                       string(entry.GetQualityGrade()),
+				EgressProbeSuccessCountTotal:       entry.EgressProbeSuccessCountTotal.Load(),
+				EgressProbeFailureCountTotal:       entry.EgressProbeFailureCountTotal.Load(),
+				EgressIPChangeCountTotal:           entry.EgressIPChangeCountTotal.Load(),
+				LastEgressIPChangeAtNs:             entry.LastEgressIPChangeAt.Load(),
+				CircuitOpenCountTotal:              entry.CircuitOpenCountTotal.Load(),
 			}
 		},
 		ReadNodeLatency: func(key model.NodeLatencyKey) *model.NodeLatency {
@@ -856,6 +888,20 @@ func restoreBootstrapNodeDynamics(
 		entry.LastLatencyProbeAttempt.Store(nd.LastLatencyProbeAttemptNs)
 		entry.LastAuthorityLatencyProbeAttempt.Store(nd.LastAuthorityLatencyProbeAttemptNs)
 		entry.LastEgressUpdateAttempt.Store(nd.LastEgressUpdateAttemptNs)
+		entry.SetEgressNetworkType(model.NormalizeEgressNetworkType(nd.EgressNetworkType))
+		entry.SetEgressASN(nd.EgressASN)
+		entry.SetEgressASNName(nd.EgressASNName)
+		entry.SetEgressASNType(nd.EgressASNType)
+		entry.SetEgressProvider(nd.EgressProvider)
+		entry.SetEgressProfileSource(model.NormalizeEgressProfileSource(nd.EgressProfileSource))
+		entry.LastEgressProfileUpdated.Store(nd.EgressProfileUpdatedAtNs)
+		entry.QualityScore.Store(int32(nd.QualityScore))
+		entry.SetQualityGrade(model.NormalizeQualityGrade(nd.QualityGrade))
+		entry.EgressProbeSuccessCountTotal.Store(nd.EgressProbeSuccessCountTotal)
+		entry.EgressProbeFailureCountTotal.Store(nd.EgressProbeFailureCountTotal)
+		entry.EgressIPChangeCountTotal.Store(nd.EgressIPChangeCountTotal)
+		entry.LastEgressIPChangeAt.Store(nd.LastEgressIPChangeAtNs)
+		entry.CircuitOpenCountTotal.Store(nd.CircuitOpenCountTotal)
 		if nd.EgressIP != "" {
 			if ip, err := netip.ParseAddr(nd.EgressIP); err == nil {
 				entry.SetEgressIP(ip)
@@ -863,6 +909,7 @@ func restoreBootstrapNodeDynamics(
 		}
 		entry.SetEgressRegion(nd.EgressRegion)
 		entry.LastEgressUpdate.Store(nd.EgressUpdatedAtNs)
+		entry.RefreshQuality(nil)
 	}
 	log.Printf("Loaded %d node dynamic states from cache.db", len(dynamics))
 	return nil
@@ -952,6 +999,7 @@ func restoreBootstrapNodeLatencies(
 			}, false)
 			loadedCount++
 		}
+		entry.RefreshQuality(latencyAuthorities)
 	}
 	log.Printf("Loaded %d latency entries from cache.db (trimmed=%d)", loadedCount, trimmedCount)
 	return nil

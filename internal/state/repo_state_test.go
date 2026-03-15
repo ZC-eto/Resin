@@ -112,8 +112,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddRotationPolicy {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddRotationPolicy)
+	if version != stateVersionAddAdvancedPlatformFilters {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddAdvancedPlatformFilters)
 	}
 }
 
@@ -184,8 +184,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddRotationPolicy {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddRotationPolicy)
+	if version != stateVersionAddAdvancedPlatformFilters {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddAdvancedPlatformFilters)
 	}
 }
 

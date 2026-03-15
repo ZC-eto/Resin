@@ -7,6 +7,11 @@ export type Subscription = {
   update_interval: string;
   node_count: number;
   healthy_node_count: number;
+  residential_node_count: number;
+  datacenter_node_count: number;
+  mobile_node_count: number;
+  unknown_node_count: number;
+  average_quality_score?: number;
   ephemeral: boolean;
   ephemeral_node_evict_delay: string;
   enabled: boolean;

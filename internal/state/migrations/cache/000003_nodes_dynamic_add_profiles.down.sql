@@ -1,0 +1,14 @@
+ALTER TABLE nodes_dynamic DROP COLUMN circuit_open_count_total;
+ALTER TABLE nodes_dynamic DROP COLUMN last_egress_ip_change_at_ns;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_ip_change_count_total;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_probe_failure_count_total;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_probe_success_count_total;
+ALTER TABLE nodes_dynamic DROP COLUMN quality_grade;
+ALTER TABLE nodes_dynamic DROP COLUMN quality_score;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_profile_updated_at_ns;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_profile_source;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_provider;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_asn_type;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_asn_name;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_asn;
+ALTER TABLE nodes_dynamic DROP COLUMN egress_network_type;

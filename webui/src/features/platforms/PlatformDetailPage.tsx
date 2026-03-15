@@ -16,8 +16,9 @@ import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatGoDuration, formatRelativeTime } from "../../lib/time";
+import { listSubscriptions } from "../subscriptions/api";
 import { getEnvConfig } from "../systemConfig/api";
-import { clearAllPlatformLeases, deletePlatform, getPlatform, resetPlatform, rotatePlatformLease, updatePlatform } from "./api";
+import { clearAllPlatformLeases, deletePlatform, getPlatform, previewPlatformFilters, resetPlatform, rotatePlatformLease, updatePlatform } from "./api";
 import {
   allocationPolicies,
   allocationPolicyLabel,
@@ -35,6 +36,7 @@ import {
   platformNameRuleHint,
   platformToFormValues,
   toPlatformUpdateInput,
+  type PlatformFormInput,
   type PlatformFormValues,
 } from "./formModel";
 import { PlatformMonitorPanel } from "./PlatformMonitorPanel";
@@ -42,6 +44,12 @@ import { PlatformMonitorPanel } from "./PlatformMonitorPanel";
 type PlatformDetailTab = "monitor" | "config" | "ops";
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+const NETWORK_TYPE_OPTIONS = [
+  { value: "RESIDENTIAL", label: "家宽 / 住宅" },
+  { value: "DATACENTER", label: "机房" },
+  { value: "MOBILE", label: "移动网络" },
+  { value: "UNKNOWN", label: "未知" },
+] as const;
 const DETAIL_TABS: Array<{ key: PlatformDetailTab; label: string; hint: string }> = [
   { key: "monitor", label: "监控", hint: "平台运行态趋势和快照" },
   { key: "config", label: "配置", hint: "过滤规则与分配策略" },
@@ -110,16 +118,34 @@ export function PlatformDetailPage() {
     queryKey: ["system-env-config", "proxy-export"],
     queryFn: getEnvConfig,
   });
+  const subscriptionsQuery = useQuery({
+    queryKey: ["subscriptions", "all", "platform-detail"],
+    queryFn: async () => {
+      const data = await listSubscriptions({ limit: 100000, offset: 0 });
+      return data.items;
+    },
+    staleTime: 60_000,
+  });
+  const previewQuery = useQuery({
+    queryKey: ["platform-preview", platformId],
+    queryFn: () => previewPlatformFilters(platformId),
+    enabled: Boolean(platformId),
+    refetchInterval: 30_000,
+  });
 
   const platform = platformQuery.data ?? null;
+  const subscriptions = subscriptionsQuery.data ?? [];
+  const previewSummary = previewQuery.data?.summary ?? null;
 
-  const editForm = useForm<PlatformFormValues>({
+  const editForm = useForm<PlatformFormInput, unknown, PlatformFormValues>({
     resolver: zodResolver(platformFormSchema),
     defaultValues: defaultPlatformFormValues,
   });
   const detailEmptyAccountBehavior = editForm.watch("reverse_proxy_empty_account_behavior");
   const detailProxyAccessMode = editForm.watch("proxy_access_mode");
   const detailRotationPolicy = editForm.watch("rotation_policy");
+  const detailSubscriptionFilters = editForm.watch("subscription_filters") ?? [];
+  const detailNetworkTypeFilters = editForm.watch("network_type_filters") ?? [];
 
   useEffect(() => {
     if (!platform) {
@@ -152,6 +178,7 @@ export function PlatformDetailPage() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["platforms"] }),
       queryClient.invalidateQueries({ queryKey: ["platform", id] }),
+      queryClient.invalidateQueries({ queryKey: ["platform-preview", id] }),
     ]);
   };
 
@@ -455,6 +482,29 @@ export function PlatformDetailPage() {
                   <p>{t("修改过滤策略与路由策略后点击保存。")}</p>
                 </div>
 
+                {previewSummary ? (
+                  <Card style={{ marginBottom: "1rem" }}>
+                    <div className="platform-tile-facts">
+                      <span className="platform-fact">
+                        <span>{t("命中节点")}</span>
+                        <strong>{previewSummary.matched_nodes}</strong>
+                      </span>
+                      <span className="platform-fact">
+                        <span>{t("健康节点")}</span>
+                        <strong>{previewSummary.healthy_nodes}</strong>
+                      </span>
+                      <span className="platform-fact">
+                        <span>{t("出口 IP")}</span>
+                        <strong>{previewSummary.unique_egress_ips}</strong>
+                      </span>
+                      <span className="platform-fact">
+                        <span>{t("已画像")}</span>
+                        <strong>{previewSummary.profiled_nodes}</strong>
+                      </span>
+                    </div>
+                  </Card>
+                ) : null}
+
                 <form className="form-grid platform-config-form" onSubmit={onEditSubmit}>
                   <div className="field-group">
                     <label className="field-label" htmlFor="detail-edit-name">
@@ -621,6 +671,85 @@ export function PlatformDetailPage() {
                       placeholder={t("每行一条，如 hk / us")}
                       {...editForm.register("region_filters_text")}
                     />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label">{t("订阅来源过滤")}</label>
+                    <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      {subscriptions.map((subscription) => {
+                        const checked = detailSubscriptionFilters.includes(subscription.id);
+                        return (
+                          <label key={subscription.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => {
+                                const next = event.target.checked
+                                  ? [...detailSubscriptionFilters, subscription.id]
+                                  : detailSubscriptionFilters.filter((value) => value !== subscription.id);
+                                editForm.setValue("subscription_filters", next, { shouldDirty: true });
+                              }}
+                            />
+                            <span>{subscription.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {t("不勾选表示允许所有订阅来源。")}
+                    </p>
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label">{t("网络类型过滤")}</label>
+                    <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      {NETWORK_TYPE_OPTIONS.map((option) => {
+                        const checked = detailNetworkTypeFilters.includes(option.value);
+                        return (
+                          <label key={option.value} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => {
+                                const next = event.target.checked
+                                  ? [...detailNetworkTypeFilters, option.value]
+                                  : detailNetworkTypeFilters.filter((value) => value !== option.value);
+                                editForm.setValue("network_type_filters", next, { shouldDirty: true });
+                              }}
+                            />
+                            <span>{t(option.label)}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-min-quality-score">
+                      {t("最低质量分")}
+                    </label>
+                    <Input id="detail-min-quality-score" type="number" min={0} max={100} {...editForm.register("min_quality_score")} />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-max-reference-latency">
+                      {t("最大参考延迟 (ms)")}
+                    </label>
+                    <Input id="detail-max-reference-latency" type="number" min={0} {...editForm.register("max_reference_latency_ms")} />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-min-stability-score">
+                      {t("最低出口稳定性分")}
+                    </label>
+                    <Input id="detail-min-stability-score" type="number" min={0} max={20} {...editForm.register("min_egress_stability_score")} />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-max-circuit-open-count">
+                      {t("最大累计熔断次数")}
+                    </label>
+                    <Input id="detail-max-circuit-open-count" type="number" min={0} {...editForm.register("max_circuit_open_count")} />
                   </div>
 
                   <div className="platform-config-actions">

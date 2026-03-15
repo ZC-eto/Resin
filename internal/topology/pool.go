@@ -498,9 +498,13 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 		if maxConsecutiveFailures > 0 && int(newCount) >= maxConsecutiveFailures {
 			// Open circuit if not already open.
 			if entry.CircuitOpenSince.CompareAndSwap(0, time.Now().UnixNano()) {
+				entry.CircuitOpenCountTotal.Add(1)
 				circuitStateChanged = true
 			}
 		}
+	}
+	if entry.RefreshQuality(p.currentLatencyAuthorities()) {
+		dynamicChanged = true
 	}
 
 	if circuitStateChanged {
@@ -531,11 +535,15 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	if isAuthority {
 		entry.LastAuthorityLatencyProbeAttempt.Store(nowNs)
 	}
-	if p.onNodeDynamicChanged != nil {
-		p.onNodeDynamicChanged(hash)
-	}
+	dynamicChanged := true
 
 	if latency == nil || *latency <= 0 || entry.LatencyTable == nil {
+		if entry.RefreshQuality(p.currentLatencyAuthorities()) {
+			dynamicChanged = true
+		}
+		if dynamicChanged && p.onNodeDynamicChanged != nil {
+			p.onNodeDynamicChanged(hash)
+		}
 		return
 	}
 
@@ -553,6 +561,12 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	// now satisfy the HasLatency filter — notify platforms.
 	if wasEmpty {
 		p.notifyAllPlatformsDirty(hash)
+	}
+	if entry.RefreshQuality(p.currentLatencyAuthorities()) {
+		dynamicChanged = true
+	}
+	if dynamicChanged && p.onNodeDynamicChanged != nil {
+		p.onNodeDynamicChanged(hash)
 	}
 
 	if p.onNodeLatencyChanged != nil {
@@ -581,14 +595,24 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 	oldIP := entry.GetEgressIP()
 	oldRegion := entry.GetEgressRegion()
 	ipChanged := false
+	dynamicChanged := false
 
 	if ip != nil {
+		entry.EgressProbeSuccessCountTotal.Add(1)
 		// Record successful egress-IP sample timestamp.
 		entry.LastEgressUpdate.Store(nowNs)
 		if oldIP != *ip {
 			entry.SetEgressIP(*ip)
 			ipChanged = true
+			if oldIP.IsValid() {
+				entry.EgressIPChangeCountTotal.Add(1)
+				entry.LastEgressIPChangeAt.Store(nowNs)
+			}
 		}
+		dynamicChanged = true
+	} else {
+		entry.EgressProbeFailureCountTotal.Add(1)
+		dynamicChanged = true
 	}
 
 	regionChanged := false
@@ -611,8 +635,29 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 	if ipChanged || regionChanged {
 		p.notifyAllPlatformsDirty(hash)
 	}
-	if p.onNodeDynamicChanged != nil {
+	if entry.RefreshQuality(p.currentLatencyAuthorities()) {
+		dynamicChanged = true
+	}
+	if dynamicChanged && p.onNodeDynamicChanged != nil {
 		p.onNodeDynamicChanged(hash)
+	}
+}
+
+// UpdateNodeProfile writes a node profile snapshot and refreshes derived quality fields.
+func (p *GlobalNodePool) UpdateNodeProfile(hash node.Hash, profile node.NodeProfile) {
+	entry, ok := p.nodes.Load(hash)
+	if !ok {
+		return
+	}
+	dynamicChanged := entry.SetEgressProfile(profile)
+	if entry.RefreshQuality(p.currentLatencyAuthorities()) {
+		dynamicChanged = true
+	}
+	if dynamicChanged {
+		p.notifyAllPlatformsDirty(hash)
+		if p.onNodeDynamicChanged != nil {
+			p.onNodeDynamicChanged(hash)
+		}
 	}
 }
 
@@ -627,4 +672,11 @@ func (p *GlobalNodePool) isAuthorityDomain(domain string) bool {
 		}
 	}
 	return false
+}
+
+func (p *GlobalNodePool) currentLatencyAuthorities() []string {
+	if p.latencyAuthorities == nil {
+		return nil
+	}
+	return p.latencyAuthorities()
 }

@@ -61,6 +61,20 @@ type HistogramBarPoint = {
   count: number;
 };
 
+type ChartTooltipEntry = {
+  dataKey?: string | number;
+  value?: number | string;
+  color?: string;
+  name?: string;
+  payload?: HistogramBarPoint;
+};
+
+type ChartTooltipProps = {
+  active?: boolean;
+  payload?: ChartTooltipEntry[];
+  label?: string | number;
+};
+
 type LatencyHistogramProps = {
   buckets: LatencyBucket[];
   emptyText: string;
@@ -426,8 +440,8 @@ async function fetchPlatformSnapshotNodeLatency(platformId: string): Promise<Sna
 
 type TrendTooltipContentProps = {
   active?: boolean;
-  payload?: any[];
-  label?: string;
+  payload?: ChartTooltipEntry[];
+  label?: string | number;
   lines: TrendLineDefinition[];
   valueFormatter: (value: number) => string;
 };
@@ -461,7 +475,7 @@ function TrendTooltipContent({ active, payload, label, lines, valueFormatter }: 
   );
 }
 
-function RequestQualityTooltipContent({ active, payload, label }: any) {
+function RequestQualityTooltipContent({ active, payload, label }: ChartTooltipProps) {
   if (!active || !payload?.length) {
     return null;
   }
@@ -470,7 +484,7 @@ function RequestQualityTooltipContent({ active, payload, label }: any) {
     <div className="trend-tooltip">
       <p className="trend-tooltip-time">{label ?? "--"}</p>
       <div className="trend-tooltip-list">
-        {payload.map((entry: any) => {
+        {payload.map((entry) => {
           const isRate = entry.dataKey === "success_rate";
           const valueStr = isRate ? `${Number(entry.value).toFixed(1)}%` : formatCount(Number(entry.value));
 
@@ -489,7 +503,7 @@ function RequestQualityTooltipContent({ active, payload, label }: any) {
   );
 }
 
-function HistogramTooltipContent({ active, payload }: any) {
+function HistogramTooltipContent({ active, payload }: Pick<ChartTooltipProps, "active" | "payload">) {
   const { t } = useI18n();
 
   if (!active || !payload?.length) {
@@ -759,7 +773,7 @@ function LatencyHistogram({ buckets, emptyText }: LatencyHistogramProps) {
 }
 
 export function PlatformMonitorPanel({ platform }: { platform: Platform }) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const [rangeKey, setRangeKey] = useState<RangeKey>("6h");
 
   const realtimeQuery = useQuery({
@@ -867,7 +881,7 @@ export function PlatformMonitorPanel({ platform }: { platform: Platform }) {
       label: formatClock(item.ts),
       active_leases: item.active_leases,
     }));
-  }, [sortedRealtimeItems, locale]);
+  }, [sortedRealtimeItems]);
 
   const requestTrendData = useMemo(() => {
     return downsampleArray(sortedRequestsItems, MAX_TREND_POINTS).map((item) => ({
@@ -875,7 +889,7 @@ export function PlatformMonitorPanel({ platform }: { platform: Platform }) {
       total_requests: item.total_requests,
       success_rate: item.success_rate * 100,
     }));
-  }, [sortedRequestsItems, locale]);
+  }, [sortedRequestsItems]);
 
   const leaseLifetimeTrendData = useMemo(() => {
     return downsampleArray(sortedLeaseLifetimeItems, MAX_TREND_POINTS).map((item) => ({
@@ -884,7 +898,7 @@ export function PlatformMonitorPanel({ platform }: { platform: Platform }) {
       p5_ms: item.p5_ms,
       p50_ms: item.p50_ms,
     }));
-  }, [sortedLeaseLifetimeItems, locale]);
+  }, [sortedLeaseLifetimeItems]);
 
   return (
     <section className="platform-drawer-section platform-monitor-section">

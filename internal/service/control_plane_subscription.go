@@ -30,6 +30,11 @@ type SubscriptionResponse struct {
 	UpdateInterval          string `json:"update_interval"`
 	NodeCount               int    `json:"node_count"`
 	HealthyNodeCount        int    `json:"healthy_node_count"`
+	ResidentialNodeCount    int    `json:"residential_node_count"`
+	DatacenterNodeCount     int    `json:"datacenter_node_count"`
+	MobileNodeCount         int    `json:"mobile_node_count"`
+	UnknownNodeCount        int    `json:"unknown_node_count"`
+	AverageQualityScore     *float64 `json:"average_quality_score,omitempty"`
 	Ephemeral               bool   `json:"ephemeral"`
 	EphemeralNodeEvictDelay string `json:"ephemeral_node_evict_delay"`
 	Enabled                 bool   `json:"enabled"`
@@ -42,6 +47,12 @@ type SubscriptionResponse struct {
 func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) SubscriptionResponse {
 	nodeCount := 0
 	healthyNodeCount := 0
+	residentialNodeCount := 0
+	datacenterNodeCount := 0
+	mobileNodeCount := 0
+	unknownNodeCount := 0
+	var qualitySum int
+	var qualityCount int
 	if managed := sub.ManagedNodes(); managed != nil {
 		managed.RangeNodes(func(h node.Hash, n subscription.ManagedNode) bool {
 			if n.Evicted {
@@ -53,9 +64,31 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 				if ok && entry.IsHealthy() {
 					healthyNodeCount++
 				}
+				if ok {
+					switch entry.GetEgressNetworkType() {
+					case model.EgressNetworkTypeResidential:
+						residentialNodeCount++
+					case model.EgressNetworkTypeDatacenter:
+						datacenterNodeCount++
+					case model.EgressNetworkTypeMobile:
+						mobileNodeCount++
+					default:
+						unknownNodeCount++
+					}
+					if entry.HasProfile() {
+						qualitySum += int(entry.QualityScore.Load())
+						qualityCount++
+					}
+				}
 			}
 			return true
 		})
+	}
+
+	var averageQualityScore *float64
+	if qualityCount > 0 {
+		value := float64(qualitySum) / float64(qualityCount)
+		averageQualityScore = &value
 	}
 
 	resp := SubscriptionResponse{
@@ -67,6 +100,11 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 		UpdateInterval:          time.Duration(sub.UpdateIntervalNs()).String(),
 		NodeCount:               nodeCount,
 		HealthyNodeCount:        healthyNodeCount,
+		ResidentialNodeCount:    residentialNodeCount,
+		DatacenterNodeCount:     datacenterNodeCount,
+		MobileNodeCount:         mobileNodeCount,
+		UnknownNodeCount:        unknownNodeCount,
+		AverageQualityScore:     averageQualityScore,
 		Ephemeral:               sub.Ephemeral(),
 		EphemeralNodeEvictDelay: time.Duration(sub.EphemeralNodeEvictDelayNs()).String(),
 		Enabled:                 sub.Enabled(),

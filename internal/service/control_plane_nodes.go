@@ -18,11 +18,17 @@ type NodeFilters struct {
 	PlatformID     *string
 	SubscriptionID *string
 	Region         *string
+	NetworkType    *string
 	CircuitOpen    *bool
 	HasOutbound    *bool
+	Profiled       *bool
 	EgressIP       *string
 	ProbedSince    *time.Time
 	TagKeyword     *string
+	MinQualityScore         *int
+	MaxReferenceLatencyMs   *int
+	MinEgressStabilityScore *int
+	MaxCircuitOpenCount     *int
 }
 
 // ListNodes returns nodes from the pool with optional filters.
@@ -155,6 +161,11 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(entry *node.NodeEntry, fil
 			return false
 		}
 	}
+	if filters.NetworkType != nil {
+		if string(entry.GetEgressNetworkType()) != strings.ToUpper(strings.TrimSpace(*filters.NetworkType)) {
+			return false
+		}
+	}
 	// Circuit open filter.
 	if filters.CircuitOpen != nil {
 		if entry.IsCircuitOpen() != *filters.CircuitOpen {
@@ -164,6 +175,11 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(entry *node.NodeEntry, fil
 	// Has outbound filter.
 	if filters.HasOutbound != nil {
 		if entry.HasOutbound() != *filters.HasOutbound {
+			return false
+		}
+	}
+	if filters.Profiled != nil {
+		if entry.HasProfile() != *filters.Profiled {
 			return false
 		}
 	}
@@ -180,6 +196,20 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(entry *node.NodeEntry, fil
 		if lastUpdate < filters.ProbedSince.UnixNano() {
 			return false
 		}
+	}
+	if filters.MinQualityScore != nil && int(entry.QualityScore.Load()) < *filters.MinQualityScore {
+		return false
+	}
+	if filters.MaxReferenceLatencyMs != nil {
+		if latencyMs, ok := entry.ReferenceLatencyMs(s.currentLatencyAuthorities()); !ok || latencyMs > float64(*filters.MaxReferenceLatencyMs) {
+			return false
+		}
+	}
+	if filters.MinEgressStabilityScore != nil && entry.EgressStabilityScore() < *filters.MinEgressStabilityScore {
+		return false
+	}
+	if filters.MaxCircuitOpenCount != nil && int(entry.CircuitOpenCountTotal.Load()) > *filters.MaxCircuitOpenCount {
+		return false
 	}
 	return true
 }

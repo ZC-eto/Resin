@@ -32,6 +32,13 @@ type EnvConfig struct {
 	MaxLatencyTableEntries                          int
 	ProbeConcurrency                                int
 	GeoIPUpdateSchedule                             string
+	IPinfoASNMMDBPath                               string
+	IPinfoPrivacyMMDBPath                           string
+	IPinfoToken                                     string
+	IPProfileOnlineRequestsPerMinute                int
+	IPProfileCacheTTL                               time.Duration
+	IPProfileBackgroundEnabled                      bool
+	IPProfileBackgroundBatchSize                    int
 	DefaultPlatformStickyTTL                        time.Duration
 	DefaultPlatformRegexFilters                     []string
 	DefaultPlatformRegionFilters                    []string
@@ -89,6 +96,13 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.MaxLatencyTableEntries = envInt("RESIN_MAX_LATENCY_TABLE_ENTRIES", 12, &errs)
 	cfg.ProbeConcurrency = envInt("RESIN_PROBE_CONCURRENCY", 1000, &errs)
 	cfg.GeoIPUpdateSchedule = envStr("RESIN_GEOIP_UPDATE_SCHEDULE", "0 7 * * *")
+	cfg.IPinfoASNMMDBPath = strings.TrimSpace(envStr("RESIN_IPINFO_ASN_MMDB_PATH", ""))
+	cfg.IPinfoPrivacyMMDBPath = strings.TrimSpace(envStr("RESIN_IPINFO_PRIVACY_MMDB_PATH", ""))
+	cfg.IPinfoToken = strings.TrimSpace(envStr("RESIN_IPINFO_TOKEN", ""))
+	cfg.IPProfileOnlineRequestsPerMinute = envInt("RESIN_IPPROFILE_ONLINE_REQUESTS_PER_MINUTE", 30, &errs)
+	cfg.IPProfileCacheTTL = envDuration("RESIN_IPPROFILE_CACHE_TTL", 24*time.Hour, &errs)
+	cfg.IPProfileBackgroundEnabled = envBool("RESIN_IPPROFILE_BACKGROUND_ENABLED", true, &errs)
+	cfg.IPProfileBackgroundBatchSize = envInt("RESIN_IPPROFILE_BACKGROUND_BATCH_SIZE", 16, &errs)
 	cfg.DefaultPlatformStickyTTL = envDuration("RESIN_DEFAULT_PLATFORM_STICKY_TTL", 7*24*time.Hour, &errs)
 	cfg.DefaultPlatformRegexFilters = envStringSlice("RESIN_DEFAULT_PLATFORM_REGEX_FILTERS", []string{}, &errs)
 	cfg.DefaultPlatformRegionFilters = envStringSlice("RESIN_DEFAULT_PLATFORM_REGION_FILTERS", []string{}, &errs)
@@ -211,6 +225,11 @@ func LoadEnvConfig() (*EnvConfig, error) {
 		errs = append(errs, "RESIN_MAX_LATENCY_TABLE_ENTRIES must be <= 32")
 	}
 	validatePositive("RESIN_PROBE_CONCURRENCY", cfg.ProbeConcurrency, &errs)
+	validatePositive("RESIN_IPPROFILE_ONLINE_REQUESTS_PER_MINUTE", cfg.IPProfileOnlineRequestsPerMinute, &errs)
+	if cfg.IPProfileCacheTTL <= 0 {
+		errs = append(errs, "RESIN_IPPROFILE_CACHE_TTL must be positive")
+	}
+	validatePositive("RESIN_IPPROFILE_BACKGROUND_BATCH_SIZE", cfg.IPProfileBackgroundBatchSize, &errs)
 	if _, err := cron.ParseStandard(cfg.GeoIPUpdateSchedule); err != nil {
 		errs = append(errs, fmt.Sprintf("RESIN_GEOIP_UPDATE_SCHEDULE: invalid cron expression %q: %v", cfg.GeoIPUpdateSchedule, err))
 	}
@@ -356,6 +375,19 @@ func envDuration(key string, defaultVal time.Duration, errs *[]string) time.Dura
 		return defaultVal
 	}
 	return d
+}
+
+func envBool(key string, defaultVal bool, errs *[]string) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultVal
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s: invalid bool %q", key, v))
+		return defaultVal
+	}
+	return parsed
 }
 
 func envStringSlice(key string, defaultVal []string, errs *[]string) []string {

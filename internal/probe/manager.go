@@ -37,6 +37,7 @@ type ProbeConfig struct {
 	// OnProbeEvent is called after each probe attempt completes (egress or latency).
 	// The kind parameter is "egress" or "latency".
 	OnProbeEvent func(kind string)
+	OnEgressSample func(hash node.Hash, ip netip.Addr)
 }
 
 // ProbeManager schedules and executes active probes against nodes in the pool.
@@ -54,6 +55,7 @@ type ProbeManager struct {
 	latencyTestURL                  func() string
 	latencyAuthorities              func() []string
 	onProbeEvent                    func(kind string)
+	onEgressSample                  func(hash node.Hash, ip netip.Addr)
 }
 
 const (
@@ -87,6 +89,7 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		latencyTestURL:                  cfg.LatencyTestURL,
 		latencyAuthorities:              cfg.LatencyAuthorities,
 		onProbeEvent:                    cfg.OnProbeEvent,
+		onEgressSample:                  cfg.OnEgressSample,
 	}
 }
 
@@ -465,6 +468,9 @@ func (m *ProbeManager) performEgressProbe(hash node.Hash) (netip.Addr, egressPro
 		return netip.Addr{}, egressProbeParseError, err
 	}
 	m.pool.UpdateNodeEgressIP(hash, &ip, loc)
+	if m.onEgressSample != nil {
+		m.onEgressSample(hash, ip)
+	}
 	return ip, egressProbeNoError, nil
 }
 

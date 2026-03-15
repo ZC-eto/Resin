@@ -31,9 +31,11 @@ export async function listRequestLogs(filters: RequestLogListFilters): Promise<R
   appendIfPresent(query, "account", filters.account);
   appendIfPresent(query, "target_host", filters.target_host);
   appendIfPresent(query, "egress_ip", filters.egress_ip);
+  appendIfPresent(query, "egress_network_type", filters.egress_network_type);
   appendIfPresent(query, "proxy_type", filters.proxy_type);
   appendIfPresent(query, "net_ok", filters.net_ok);
   appendIfPresent(query, "http_status", filters.http_status);
+  appendIfPresent(query, "min_quality_score", filters.min_quality_score);
   appendIfPresent(query, "cursor", filters.cursor);
   appendIfPresent(query, "limit", filters.limit);
   appendIfPresent(query, "fuzzy", filters.fuzzy);

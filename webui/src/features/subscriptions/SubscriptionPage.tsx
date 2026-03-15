@@ -430,6 +430,20 @@ export function SubscriptionPage() {
         },
       }),
       col.display({
+        id: "quality",
+        header: t("画像概览"),
+        cell: (info) => {
+          const s = info.row.original;
+          const avg = typeof s.average_quality_score === "number" ? s.average_quality_score.toFixed(0) : "-";
+          return (
+            <div className="logs-cell-stack">
+              <span>{`${t("住宅")} ${s.residential_node_count} / ${t("机房")} ${s.datacenter_node_count}`}</span>
+              <small>{`${t("未知")} ${s.unknown_node_count} / Avg ${avg}`}</small>
+            </div>
+          );
+        },
+      }),
+      col.display({
         id: "status",
         header: t("状态"),
         cell: (info) => {

@@ -244,6 +244,18 @@ func HandlePreviewFilter(cp *service.ControlPlaneService) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		WritePage(w, http.StatusOK, nodes, pg)
+		WriteJSON(w, http.StatusOK, struct {
+			Items   []service.NodeSummary        `json:"items"`
+			Total   int                          `json:"total"`
+			Limit   int                          `json:"limit"`
+			Offset  int                          `json:"offset"`
+			Summary service.PreviewFilterSummary `json:"summary"`
+		}{
+			Items:   PaginateSlice(nodes.Items, pg),
+			Total:   len(nodes.Items),
+			Limit:   pg.Limit,
+			Offset:  pg.Offset,
+			Summary: nodes.Summary,
+		})
 	}
 }
