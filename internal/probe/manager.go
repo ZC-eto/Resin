@@ -36,7 +36,7 @@ type ProbeConfig struct {
 
 	// OnProbeEvent is called after each probe attempt completes (egress or latency).
 	// The kind parameter is "egress" or "latency".
-	OnProbeEvent func(kind string)
+	OnProbeEvent   func(kind string)
 	OnEgressSample func(hash node.Hash, ip netip.Addr)
 }
 
@@ -62,6 +62,7 @@ const (
 	egressTraceURL        = "https://cloudflare.com/cdn-cgi/trace"
 	egressTraceDomain     = "cloudflare.com"
 	defaultLatencyTestURL = "https://www.gstatic.com/generate_204"
+	unknownEgressRetryCap = 10 * time.Minute
 )
 
 type egressProbeErrorStage int
@@ -274,9 +275,9 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 // scanEgress iterates all pool nodes and probes those due for egress check.
 func (m *ProbeManager) scanEgress() {
 	now := time.Now()
-	interval := 24 * time.Hour // default MaxEgressTestInterval
+	maxInterval := 24 * time.Hour // default MaxEgressTestInterval
 	if m.maxEgressTestInterval != nil {
-		interval = m.maxEgressTestInterval()
+		maxInterval = m.maxEgressTestInterval()
 	}
 	lookahead := 15 * time.Second
 
@@ -293,6 +294,7 @@ func (m *ProbeManager) scanEgress() {
 		}
 
 		// Check if due: lastAttempt + interval - lookahead <= now.
+		interval := currentEgressProbeInterval(entry, maxInterval)
 		lastCheck := entry.LastEgressUpdateAttempt.Load()
 		if lastCheck > 0 {
 			nextDue := time.Unix(0, lastCheck).Add(interval).Add(-lookahead)
@@ -317,6 +319,19 @@ func (m *ProbeManager) scanEgress() {
 
 		return true
 	})
+}
+
+func currentEgressProbeInterval(entry *node.NodeEntry, maxInterval time.Duration) time.Duration {
+	if maxInterval <= 0 {
+		maxInterval = 24 * time.Hour
+	}
+	if entry == nil || entry.GetEgressIP().IsValid() {
+		return maxInterval
+	}
+	if maxInterval < unknownEgressRetryCap {
+		return maxInterval
+	}
+	return unknownEgressRetryCap
 }
 
 // scanLatency iterates all pool nodes and probes those due for latency check.

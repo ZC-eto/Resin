@@ -587,7 +587,8 @@ export function NodesPage() {
         </button>
       ),
       cell: (info) => {
-        const val = regionToFlag(info.getValue());
+        const node = info.row.original;
+        const val = !info.getValue() && node.has_outbound && !node.egress_ip ? t("待出口探测") : regionToFlag(info.getValue());
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
@@ -598,7 +599,8 @@ export function NodesPage() {
     col.accessor("egress_ip", {
       header: t("出口 IP"),
       cell: (info) => {
-        const val = info.getValue() || "-";
+        const node = info.row.original;
+        const val = info.getValue() || (node.has_outbound ? t("待出口探测") : "-");
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
@@ -636,7 +638,7 @@ export function NodesPage() {
       cell: (info) => `${info.getValue()} / ${info.row.original.quality_grade}`,
     }),
     col.accessor("last_latency_probe_attempt", {
-      header: t("上次探测"),
+      header: t("上次延迟探测"),
       cell: (info) => formatRelativeTime(info.getValue()),
     }),
     col.accessor("failure_count", {
@@ -1086,7 +1088,10 @@ export function NodesPage() {
                   <div>
                     <span>{t("出口 / 区域")}</span>
                     <p>
-                      {detailNode.egress_ip || "-"} / {regionToFlag(detailNode.region)}
+                      {detailNode.egress_ip || (detailNode.has_outbound ? t("待出口探测") : "-")} /{" "}
+                      {!detailNode.region && detailNode.has_outbound && !detailNode.egress_ip
+                        ? t("待出口探测")
+                        : regionToFlag(detailNode.region)}
                     </p>
                   </div>
                   <div>
@@ -1106,7 +1111,7 @@ export function NodesPage() {
                     })()}
                   </div>
                   <div>
-                    <span>{t("上次探测")}</span>
+                    <span>{t("上次延迟探测")}</span>
                     <p>{formatDateTime(detailNode.last_latency_probe_attempt || "")}</p>
                   </div>
                   <div>
