@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Resinat/Resin/internal/netutil"
@@ -56,6 +57,11 @@ type ProbeManager struct {
 	latencyAuthorities              func() []string
 	onProbeEvent                    func(kind string)
 	onEgressSample                  func(hash node.Hash, ip netip.Addr)
+	runningMu                       sync.Mutex
+	runningEgress                   map[string]struct{}
+	runningLatency                  map[string]struct{}
+	lastEgressScanAt                atomic.Int64
+	lastLatencyScanAt               atomic.Int64
 }
 
 const (
@@ -72,6 +78,16 @@ const (
 	egressProbeFetchError
 	egressProbeParseError
 )
+
+type RuntimeStatus struct {
+	InFlightEgress      int   `json:"in_flight_egress"`
+	InFlightLatency     int   `json:"in_flight_latency"`
+	DueEgressNodes      int   `json:"due_egress_nodes"`
+	DueLatencyNodes     int   `json:"due_latency_nodes"`
+	UnknownEgressNodes  int   `json:"unknown_egress_nodes"`
+	LastEgressScanAtNs  int64 `json:"last_egress_scan_at_ns"`
+	LastLatencyScanAtNs int64 `json:"last_latency_scan_at_ns"`
+}
 
 // NewProbeManager creates a new ProbeManager.
 func NewProbeManager(cfg ProbeConfig) *ProbeManager {
@@ -91,6 +107,8 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		latencyAuthorities:              cfg.LatencyAuthorities,
 		onProbeEvent:                    cfg.OnProbeEvent,
 		onEgressSample:                  cfg.OnEgressSample,
+		runningEgress:                   make(map[string]struct{}),
+		runningLatency:                  make(map[string]struct{}),
 	}
 }
 
@@ -275,6 +293,7 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 // scanEgress iterates all pool nodes and probes those due for egress check.
 func (m *ProbeManager) scanEgress() {
 	now := time.Now()
+	m.lastEgressScanAt.Store(now.UnixNano())
 	maxInterval := 24 * time.Hour // default MaxEgressTestInterval
 	if m.maxEgressTestInterval != nil {
 		maxInterval = m.maxEgressTestInterval()
@@ -337,6 +356,7 @@ func currentEgressProbeInterval(entry *node.NodeEntry, maxInterval time.Duration
 // scanLatency iterates all pool nodes and probes those due for latency check.
 func (m *ProbeManager) scanLatency() {
 	now := time.Now()
+	m.lastLatencyScanAt.Store(now.UnixNano())
 	maxLatencyInterval := 1 * time.Hour // default
 	if m.maxLatencyTestInterval != nil {
 		maxLatencyInterval = m.maxLatencyTestInterval()
@@ -418,6 +438,8 @@ func (m *ProbeManager) isLatencyProbeDue(
 // probeEgress performs a single egress probe against a node via Cloudflare trace.
 // Writes back: RecordResult, RecordLatency (cloudflare.com), UpdateNodeEgressIP.
 func (m *ProbeManager) probeEgress(hash node.Hash, entry *node.NodeEntry) {
+	m.markRunning(hash, "egress", true)
+	defer m.markRunning(hash, "egress", false)
 	if m.fetcher == nil {
 		return
 	}
@@ -445,6 +467,8 @@ func (m *ProbeManager) probeEgress(hash node.Hash, entry *node.NodeEntry) {
 // probeLatency performs a latency probe against a node using the configured test URL.
 // Writes back: RecordResult, RecordLatency.
 func (m *ProbeManager) probeLatency(hash node.Hash, entry *node.NodeEntry, testURL string) {
+	m.markRunning(hash, "latency", true)
+	defer m.markRunning(hash, "latency", false)
 	if m.fetcher == nil {
 		return
 	}
@@ -509,4 +533,85 @@ func (m *ProbeManager) currentLatencyTestURL() string {
 		testURL = m.latencyTestURL()
 	}
 	return testURL
+}
+
+func (m *ProbeManager) markRunning(hash node.Hash, kind string, running bool) {
+	m.runningMu.Lock()
+	defer m.runningMu.Unlock()
+	target := m.runningEgress
+	if kind == "latency" {
+		target = m.runningLatency
+	}
+	if running {
+		target[hash.Hex()] = struct{}{}
+		return
+	}
+	delete(target, hash.Hex())
+}
+
+func (m *ProbeManager) Status() RuntimeStatus {
+	if m == nil {
+		return RuntimeStatus{}
+	}
+	status := RuntimeStatus{
+		LastEgressScanAtNs:  m.lastEgressScanAt.Load(),
+		LastLatencyScanAtNs: m.lastLatencyScanAt.Load(),
+	}
+	if m.pool == nil {
+		return status
+	}
+
+	m.runningMu.Lock()
+	status.InFlightEgress = len(m.runningEgress)
+	status.InFlightLatency = len(m.runningLatency)
+	m.runningMu.Unlock()
+
+	now := time.Now()
+	maxEgressInterval := 24 * time.Hour
+	if m.maxEgressTestInterval != nil {
+		maxEgressInterval = m.maxEgressTestInterval()
+	}
+	maxLatencyInterval := time.Hour
+	if m.maxLatencyTestInterval != nil {
+		maxLatencyInterval = m.maxLatencyTestInterval()
+	}
+	maxAuthorityInterval := 3 * time.Hour
+	if m.maxAuthorityLatencyTestInterval != nil {
+		maxAuthorityInterval = m.maxAuthorityLatencyTestInterval()
+	}
+	authorities := []string{}
+	if m.latencyAuthorities != nil {
+		authorities = m.latencyAuthorities()
+	}
+	lookahead := 15 * time.Second
+
+	m.pool.Range(func(hash node.Hash, entry *node.NodeEntry) bool {
+		if entry.Outbound.Load() == nil {
+			return true
+		}
+		if !entry.GetEgressIP().IsValid() {
+			status.UnknownEgressNodes++
+		}
+		interval := currentEgressProbeInterval(entry, maxEgressInterval)
+		lastCheck := entry.LastEgressUpdateAttempt.Load()
+		if lastCheck == 0 || !now.Before(time.Unix(0, lastCheck).Add(interval).Add(-lookahead)) {
+			status.DueEgressNodes++
+		}
+		if m.isLatencyProbeDue(entry, now, maxLatencyInterval, maxAuthorityInterval, authorities, lookahead) {
+			status.DueLatencyNodes++
+		}
+		_ = hash
+		return true
+	})
+	return status
+}
+
+func (m *ProbeManager) IsEgressRunning(hash node.Hash) bool {
+	if m == nil {
+		return false
+	}
+	m.runningMu.Lock()
+	defer m.runningMu.Unlock()
+	_, ok := m.runningEgress[hash.Hex()]
+	return ok
 }

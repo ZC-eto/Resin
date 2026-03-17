@@ -81,18 +81,29 @@ type Platform struct {
 }
 
 // Subscription represents a node subscription source.
+type SubscriptionSource struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Type    string `json:"type"`
+	URL     string `json:"url"`
+	Content string `json:"content"`
+	Enabled bool   `json:"enabled"`
+}
+
+// Subscription represents a node subscription source.
 type Subscription struct {
-	ID                        string `json:"id"`
-	Name                      string `json:"name"`
-	SourceType                string `json:"source_type"`
-	URL                       string `json:"url"`
-	Content                   string `json:"content"`
-	UpdateIntervalNs          int64  `json:"update_interval_ns"`
-	Enabled                   bool   `json:"enabled"`
-	Ephemeral                 bool   `json:"ephemeral"`
-	EphemeralNodeEvictDelayNs int64  `json:"ephemeral_node_evict_delay_ns"`
-	CreatedAtNs               int64  `json:"created_at_ns"`
-	UpdatedAtNs               int64  `json:"updated_at_ns"`
+	ID                        string               `json:"id"`
+	Name                      string               `json:"name"`
+	SourceType                string               `json:"source_type"`
+	URL                       string               `json:"url"`
+	Content                   string               `json:"content"`
+	Sources                   []SubscriptionSource `json:"sources"`
+	UpdateIntervalNs          int64                `json:"update_interval_ns"`
+	Enabled                   bool                 `json:"enabled"`
+	Ephemeral                 bool                 `json:"ephemeral"`
+	EphemeralNodeEvictDelayNs int64                `json:"ephemeral_node_evict_delay_ns"`
+	CreatedAtNs               int64                `json:"created_at_ns"`
+	UpdatedAtNs               int64                `json:"updated_at_ns"`
 }
 
 // AccountHeaderRule defines header extraction rules for reverse proxy account matching.

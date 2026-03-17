@@ -28,6 +28,7 @@ type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   last_latency_probe_attempt?: string | null;
   last_authority_latency_probe_attempt?: string | null;
   last_egress_update_attempt?: string | null;
+  profile_state?: string | null;
 };
 
 function normalizeNode(raw: ApiNodeSummary): NodeSummary {
@@ -38,6 +39,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
     last_error: raw.last_error || "",
     circuit_open_since: raw.circuit_open_since || "",
     egress_ip: raw.egress_ip || "",
+    profile_state: raw.profile_state || "",
     egress_network_type: raw.egress_network_type || "UNKNOWN",
     egress_asn: raw.egress_asn ?? undefined,
     egress_asn_name: raw.egress_asn_name || "",

@@ -1,9 +1,19 @@
+export type SubscriptionSource = {
+  id: string;
+  label: string;
+  type: "remote" | "local";
+  url: string;
+  content: string;
+  enabled: boolean;
+};
+
 export type Subscription = {
   id: string;
   name: string;
   source_type: "remote" | "local";
   url: string;
   content: string;
+  sources: SubscriptionSource[];
   update_interval: string;
   node_count: number;
   healthy_node_count: number;
@@ -30,6 +40,7 @@ export type PageResponse<T> = {
 
 export type SubscriptionCreateInput = {
   name: string;
+  sources?: SubscriptionSource[];
   source_type?: "remote" | "local";
   url?: string;
   content?: string;
@@ -41,6 +52,7 @@ export type SubscriptionCreateInput = {
 
 export type SubscriptionUpdateInput = {
   name?: string;
+  sources?: SubscriptionSource[];
   url?: string;
   content?: string;
   update_interval?: string;

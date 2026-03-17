@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Info, Plus, RefreshCw, Search, Sparkles } from "lucide-react";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -99,11 +99,11 @@ export function PlatformPage() {
     resolver: zodResolver(platformFormSchema),
     defaultValues: defaultPlatformFormValues,
   });
-  const createEmptyAccountBehavior = createForm.watch("reverse_proxy_empty_account_behavior");
-  const createProxyAccessMode = createForm.watch("proxy_access_mode");
-  const createRotationPolicy = createForm.watch("rotation_policy");
-  const createSubscriptionFilters = createForm.watch("subscription_filters") ?? [];
-  const createNetworkTypeFilters = createForm.watch("network_type_filters") ?? [];
+  const createEmptyAccountBehavior = useWatch({ control: createForm.control, name: "reverse_proxy_empty_account_behavior" });
+  const createProxyAccessMode = useWatch({ control: createForm.control, name: "proxy_access_mode" });
+  const createRotationPolicy = useWatch({ control: createForm.control, name: "rotation_policy" });
+  const createSubscriptionFilters = useWatch({ control: createForm.control, name: "subscription_filters" }) ?? [];
+  const createNetworkTypeFilters = useWatch({ control: createForm.control, name: "network_type_filters" }) ?? [];
 
   const createMutation = useMutation({
     mutationFn: createPlatform,

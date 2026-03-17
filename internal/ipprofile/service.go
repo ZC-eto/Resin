@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Resinat/Resin/internal/config"
@@ -52,11 +53,14 @@ type Service struct {
 	runtimeSettings     func() RuntimeSettings
 	backgroundBatchSize int
 
-	queue    chan queueItem
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
-	queuedMu sync.Mutex
-	queued   map[string]struct{}
+	highQueue chan queueItem
+	lowQueue  chan queueItem
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
+	queuedMu  sync.Mutex
+	queued    map[string]queuedMeta
+	runningMu sync.Mutex
+	running   map[string]struct{}
 
 	cacheMu sync.RWMutex
 	cache   map[string]cachedProfile
@@ -64,17 +68,81 @@ type Service struct {
 	limiterMu        sync.Mutex
 	onlineLimiter    *rate.Limiter
 	onlineLimiterRPM int
+
+	lastStartedAtNs  int64
+	lastFinishedAtNs int64
+	lastError        atomicString
 }
 
 type queueItem struct {
-	hash  node.Hash
-	force bool
+	hash     node.Hash
+	force    bool
+	priority queuePriority
 }
+
+type queuedMeta struct {
+	force    bool
+	priority queuePriority
+}
+
+type queuePriority uint8
+
+const (
+	queuePriorityLow queuePriority = iota
+	queuePriorityHigh
+)
 
 type cachedProfile struct {
 	profile  node.NodeProfile
 	expiryAt time.Time
 }
+
+type atomicString struct {
+	value atomic.Pointer[string]
+}
+
+func (a *atomicString) Load() string {
+	if a == nil {
+		return ""
+	}
+	ptr := a.value.Load()
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
+func (a *atomicString) Store(value string) {
+	if a == nil {
+		return
+	}
+	copyValue := value
+	a.value.Store(&copyValue)
+}
+
+type RuntimeStatus struct {
+	BackgroundEnabled     bool   `json:"background_enabled"`
+	QueueTotal            int    `json:"queue_total"`
+	QueueHealthy          int    `json:"queue_healthy"`
+	QueueUnhealthy        int    `json:"queue_unhealthy"`
+	QueueManual           int    `json:"queue_manual"`
+	RunningTotal          int    `json:"running_total"`
+	RunningHealthy        int    `json:"running_healthy"`
+	PendingKnownNodes     int    `json:"pending_known_nodes"`
+	PendingHealthyNodes   int    `json:"pending_healthy_nodes"`
+	PendingUnhealthyNodes int    `json:"pending_unhealthy_nodes"`
+	LastStartedAtNs       int64  `json:"last_started_at_ns"`
+	LastFinishedAtNs      int64  `json:"last_finished_at_ns"`
+	LastError             string `json:"last_error,omitempty"`
+}
+
+type NodeTaskState string
+
+const (
+	NodeTaskStateIdle    NodeTaskState = "IDLE"
+	NodeTaskStateQueued  NodeTaskState = "QUEUED"
+	NodeTaskStateRunning NodeTaskState = "RUNNING"
+)
 
 type asnRecord struct {
 	ASN    string `maxminddb:"asn"`
@@ -116,13 +184,15 @@ func NewService(cfg Config) *Service {
 		runtimeSettings:     cfg.RuntimeSettings,
 		backgroundBatchSize: cfg.BackgroundBatchSize,
 		stopCh:              make(chan struct{}),
-		queued:              make(map[string]struct{}),
+		queued:              make(map[string]queuedMeta),
+		running:             make(map[string]struct{}),
 		cache:               make(map[string]cachedProfile),
 	}
 	if svc.backgroundBatchSize <= 0 {
 		svc.backgroundBatchSize = 16
 	}
-	svc.queue = make(chan queueItem, svc.backgroundBatchSize*8)
+	svc.highQueue = make(chan queueItem, svc.backgroundBatchSize*8)
+	svc.lowQueue = make(chan queueItem, svc.backgroundBatchSize*8)
 	if svc.httpClient == nil {
 		svc.httpClient = &http.Client{Timeout: 8 * time.Second}
 	}
@@ -208,24 +278,36 @@ func (s *Service) enqueue(hash node.Hash, force bool, manual bool) {
 	if s == nil {
 		return
 	}
-	if !manual && !s.settingsSnapshot().BackgroundEnabled {
+	settings := s.settingsSnapshot()
+	if !manual && !settings.BackgroundEnabled {
 		return
 	}
 
 	hashHex := hash.Hex()
-	s.queuedMu.Lock()
-	if _, exists := s.queued[hashHex]; exists {
-		s.queuedMu.Unlock()
+	meta, shouldQueue := s.resolveQueueMeta(hash, force, manual, settings)
+	if !shouldQueue {
 		return
 	}
-	s.queued[hashHex] = struct{}{}
+	s.queuedMu.Lock()
+	if current, exists := s.queued[hashHex]; exists {
+		shouldUpgradePriority := meta.priority > current.priority
+		if force && !current.force {
+			current.force = true
+		}
+		if shouldUpgradePriority {
+			current.priority = meta.priority
+		}
+		s.queued[hashHex] = current
+		s.queuedMu.Unlock()
+		if shouldUpgradePriority {
+			s.pushQueue(queueItem{hash: hash, force: current.force, priority: current.priority})
+		}
+		return
+	}
+	s.queued[hashHex] = meta
 	s.queuedMu.Unlock()
 
-	select {
-	case s.queue <- queueItem{hash: hash, force: force}:
-	case <-s.stopCh:
-		s.dropQueued(hashHex)
-	}
+	s.pushQueue(queueItem{hash: hash, force: meta.force, priority: meta.priority})
 }
 
 func (s *Service) Enqueue(hash node.Hash) {
@@ -240,18 +322,29 @@ func (s *Service) SeedExistingNodes(force bool) int {
 	if s == nil || s.pool == nil {
 		return 0
 	}
-	hashes := make([]node.Hash, 0, 256)
+	settings := s.settingsSnapshot()
+	healthyHashes := make([]node.Hash, 0, 256)
+	unhealthyHashes := make([]node.Hash, 0, 64)
 	s.pool.RangeNodes(func(hash node.Hash, entry *node.NodeEntry) bool {
-		if entry.GetEgressIP().IsValid() {
-			hashes = append(hashes, hash)
+		if !entry.GetEgressIP().IsValid() {
+			return true
+		}
+		if !force && !nodeNeedsProfile(entry, settings) {
+			return true
+		}
+		if entry.IsHealthy() {
+			healthyHashes = append(healthyHashes, hash)
+		} else {
+			unhealthyHashes = append(unhealthyHashes, hash)
 		}
 		return true
 	})
-	if len(hashes) == 0 {
+	total := len(healthyHashes) + len(unhealthyHashes)
+	if total == 0 {
 		return 0
 	}
-	go s.enqueueSeedBatch(hashes, force)
-	return len(hashes)
+	go s.enqueueSeedBatch(append(healthyHashes, unhealthyHashes...), force)
+	return total
 }
 
 func (s *Service) enqueueSeedBatch(hashes []node.Hash, force bool) {
@@ -267,33 +360,42 @@ func (s *Service) enqueueSeedBatch(hashes []node.Hash, force bool) {
 func (s *Service) run() {
 	batch := make([]queueItem, 0, maxInt(1, s.backgroundBatchSize))
 	for {
-		select {
-		case <-s.stopCh:
+		first, ok := s.takeNext()
+		if !ok {
 			return
-		case first := <-s.queue:
-			batch = append(batch[:0], first)
-			draining := true
-			for draining && len(batch) < s.backgroundBatchSize {
-				select {
-				case item := <-s.queue:
-					batch = append(batch, item)
-				default:
-					draining = false
-				}
+		}
+		batch = append(batch[:0], first)
+		draining := true
+		for draining && len(batch) < s.backgroundBatchSize {
+			if item, ok := s.takeNextNonBlocking(); ok {
+				batch = append(batch, item)
+				continue
 			}
-			for _, item := range batch {
-				s.profileNode(item.hash, item.force)
-			}
+			draining = false
+		}
+		for _, item := range batch {
+			s.profileNode(item)
 		}
 	}
 }
 
-func (s *Service) profileNode(hash node.Hash, force bool) {
-	defer s.dropQueued(hash.Hex())
+func (s *Service) profileNode(item queueItem) {
+	hashHex := item.hash.Hex()
+	force, ok := s.queuedForce(hashHex, item.priority, item.force)
+	if !ok {
+		return
+	}
+	s.markRunning(hashHex, true)
+	atomic.StoreInt64(&s.lastStartedAtNs, time.Now().UnixNano())
+	defer func() {
+		s.markRunning(hashHex, false)
+		s.dropQueued(hashHex)
+		atomic.StoreInt64(&s.lastFinishedAtNs, time.Now().UnixNano())
+	}()
 	if s == nil || s.pool == nil {
 		return
 	}
-	entry, ok := s.pool.GetEntry(hash)
+	entry, ok := s.pool.GetEntry(item.hash)
 	if !ok || entry == nil {
 		return
 	}
@@ -303,10 +405,88 @@ func (s *Service) profileNode(hash node.Hash, force bool) {
 	}
 	profile, err := s.LookupProfile(context.Background(), ip, force)
 	if err != nil {
+		s.lastError.Store(err.Error())
 		log.Printf("[ipprofile] lookup %s failed: %v", ip.String(), err)
 		return
 	}
-	s.pool.UpdateNodeProfile(hash, profile)
+	s.lastError.Store("")
+	s.pool.UpdateNodeProfile(item.hash, profile)
+}
+
+func (s *Service) TaskState(hash node.Hash) NodeTaskState {
+	if s == nil {
+		return NodeTaskStateIdle
+	}
+	hashHex := hash.Hex()
+	s.runningMu.Lock()
+	_, running := s.running[hashHex]
+	s.runningMu.Unlock()
+	if running {
+		return NodeTaskStateRunning
+	}
+	s.queuedMu.Lock()
+	_, queued := s.queued[hashHex]
+	s.queuedMu.Unlock()
+	if queued {
+		return NodeTaskStateQueued
+	}
+	return NodeTaskStateIdle
+}
+
+func (s *Service) Status() RuntimeStatus {
+	settings := s.settingsSnapshot()
+	status := RuntimeStatus{
+		BackgroundEnabled: settings.BackgroundEnabled,
+		LastStartedAtNs:   atomic.LoadInt64(&s.lastStartedAtNs),
+		LastFinishedAtNs:  atomic.LoadInt64(&s.lastFinishedAtNs),
+		LastError:         s.lastError.Load(),
+	}
+	if s == nil || s.pool == nil {
+		return status
+	}
+
+	s.queuedMu.Lock()
+	status.QueueTotal = len(s.queued)
+	for hashHex, meta := range s.queued {
+		entry, ok := s.lookupEntryByHex(hashHex)
+		if ok && entry.IsHealthy() {
+			status.QueueHealthy++
+		} else {
+			status.QueueUnhealthy++
+		}
+		if meta.force {
+			status.QueueManual++
+		}
+	}
+	s.queuedMu.Unlock()
+
+	s.runningMu.Lock()
+	status.RunningTotal = len(s.running)
+	for hashHex := range s.running {
+		entry, ok := s.lookupEntryByHex(hashHex)
+		if ok && entry.IsHealthy() {
+			status.RunningHealthy++
+		}
+	}
+	s.runningMu.Unlock()
+
+	s.pool.RangeNodes(func(_ node.Hash, entry *node.NodeEntry) bool {
+		if !entry.GetEgressIP().IsValid() {
+			return true
+		}
+		if !nodeNeedsProfile(entry, settings) {
+			return true
+		}
+		status.PendingKnownNodes++
+		if entry.IsHealthy() {
+			status.PendingHealthyNodes++
+		} else {
+			status.PendingUnhealthyNodes++
+		}
+		return true
+	})
+
+	return status
 }
 
 func (s *Service) ReprofileNodeSync(hash node.Hash, force bool) (node.NodeProfile, error) {
@@ -646,6 +826,141 @@ func (s *Service) dropQueued(hashHex string) {
 	s.queuedMu.Lock()
 	delete(s.queued, hashHex)
 	s.queuedMu.Unlock()
+}
+
+func (s *Service) queuedForce(hashHex string, priority queuePriority, fallback bool) (bool, bool) {
+	s.queuedMu.Lock()
+	defer s.queuedMu.Unlock()
+	meta, ok := s.queued[hashHex]
+	if !ok {
+		return fallback, false
+	}
+	if priority < meta.priority {
+		return meta.force, false
+	}
+	return meta.force, true
+}
+
+func (s *Service) markRunning(hashHex string, running bool) {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	if running {
+		s.running[hashHex] = struct{}{}
+		return
+	}
+	delete(s.running, hashHex)
+}
+
+func (s *Service) lookupEntryByHex(hashHex string) (*node.NodeEntry, bool) {
+	hash, err := node.ParseHex(hashHex)
+	if err != nil || s.pool == nil {
+		return nil, false
+	}
+	return s.pool.GetEntry(hash)
+}
+
+func nodeNeedsProfile(entry *node.NodeEntry, settings RuntimeSettings) bool {
+	if entry == nil || !entry.GetEgressIP().IsValid() {
+		return false
+	}
+	if !entry.HasProfile() {
+		return true
+	}
+	if entry.GetEgressNetworkType() != model.EgressNetworkTypeUnknown {
+		return false
+	}
+	if config.NormalizeIPProfileOnlineProvider(string(settings.OnlineProvider)) == config.IPProfileOnlineProviderDisabled {
+		return false
+	}
+	if strings.TrimSpace(settings.OnlineAPIKey) == "" {
+		return false
+	}
+	switch entry.GetEgressProfileSource() {
+	case model.EgressProfileSourceOnline, model.EgressProfileSourceLocalPlusOnline:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Service) resolveQueueMeta(hash node.Hash, force bool, manual bool, settings RuntimeSettings) (queuedMeta, bool) {
+	meta := queuedMeta{
+		force:    force,
+		priority: queuePriorityLow,
+	}
+	if s == nil || s.pool == nil {
+		return meta, false
+	}
+	entry, ok := s.pool.GetEntry(hash)
+	if !ok || entry == nil {
+		return meta, false
+	}
+	if !entry.GetEgressIP().IsValid() {
+		return meta, false
+	}
+	if !force && !nodeNeedsProfile(entry, settings) {
+		return meta, false
+	}
+	if manual || entry.IsHealthy() {
+		meta.priority = queuePriorityHigh
+	}
+	return meta, true
+}
+
+func (s *Service) pushQueue(item queueItem) {
+	if s == nil {
+		return
+	}
+	target := s.lowQueue
+	if item.priority == queuePriorityHigh {
+		target = s.highQueue
+	}
+	select {
+	case target <- item:
+	case <-s.stopCh:
+		s.dropQueued(item.hash.Hex())
+	}
+}
+
+func (s *Service) takeNext() (queueItem, bool) {
+	if s == nil {
+		return queueItem{}, false
+	}
+	select {
+	case <-s.stopCh:
+		return queueItem{}, false
+	default:
+	}
+	select {
+	case item := <-s.highQueue:
+		return item, true
+	default:
+	}
+	select {
+	case <-s.stopCh:
+		return queueItem{}, false
+	case item := <-s.highQueue:
+		return item, true
+	case item := <-s.lowQueue:
+		return item, true
+	}
+}
+
+func (s *Service) takeNextNonBlocking() (queueItem, bool) {
+	if s == nil {
+		return queueItem{}, false
+	}
+	select {
+	case item := <-s.highQueue:
+		return item, true
+	default:
+	}
+	select {
+	case item := <-s.lowQueue:
+		return item, true
+	default:
+		return queueItem{}, false
+	}
 }
 
 func (s *Service) getCached(ip string, ttl time.Duration) (node.NodeProfile, bool) {

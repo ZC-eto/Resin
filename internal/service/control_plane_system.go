@@ -67,6 +67,11 @@ type ControlPlaneService struct {
 	configVersion int
 }
 
+type SystemTaskStatus struct {
+	Probe     probe.RuntimeStatus     `json:"probe"`
+	IPProfile ipprofile.RuntimeStatus `json:"ip_profile"`
+}
+
 // ------------------------------------------------------------------
 // System Config
 // ------------------------------------------------------------------
@@ -123,6 +128,7 @@ var subscriptionPatchAllowedFields = map[string]bool{
 	"name":                       true,
 	"url":                        true,
 	"content":                    true,
+	"sources":                    true,
 	"update_interval":            true,
 	"enabled":                    true,
 	"ephemeral":                  true,
@@ -314,4 +320,18 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 		}
 	}
 	return nil
+}
+
+func (s *ControlPlaneService) GetSystemTaskStatus() SystemTaskStatus {
+	status := SystemTaskStatus{}
+	if s == nil {
+		return status
+	}
+	if s.ProbeMgr != nil {
+		status.Probe = s.ProbeMgr.Status()
+	}
+	if s.ProfileSvc != nil {
+		status.IPProfile = s.ProfileSvc.Status()
+	}
+	return status
 }

@@ -112,6 +112,18 @@ func (p mergePatch) optionalDurationString(field string) (time.Duration, bool, *
 	return d, true, nil
 }
 
+func (p mergePatch) optionalArray(field string) ([]any, bool, *ServiceError) {
+	raw, ok := p[field]
+	if !ok {
+		return nil, false, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, true, invalidArg(fmt.Sprintf("%s: must be an array", field))
+	}
+	return arr, true, nil
+}
+
 func (p mergePatch) optionalInt(field string) (int, bool, *ServiceError) {
 	raw, ok := p[field]
 	if !ok {

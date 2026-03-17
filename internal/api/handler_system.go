@@ -110,6 +110,13 @@ func HandleQueueKnownNodeReprofile(cp *service.ControlPlaneService) http.Handler
 	}
 }
 
+// HandleSystemTaskStatus returns a handler for GET /api/v1/system/tasks/status.
+func HandleSystemTaskStatus(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, cp.GetSystemTaskStatus())
+	}
+}
+
 func systemEnvConfigSnapshot(envCfg *config.EnvConfig) *systemEnvConfigResponse {
 	if envCfg == nil {
 		return nil

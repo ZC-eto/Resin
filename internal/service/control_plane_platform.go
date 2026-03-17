@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/platform"
@@ -869,14 +870,14 @@ type PlatformSpecFilter struct {
 }
 
 type PreviewFilterSummary struct {
-	MatchedNodes            int            `json:"matched_nodes"`
-	HealthyNodes            int            `json:"healthy_nodes"`
-	UniqueEgressIPs         int            `json:"unique_egress_ips"`
-	UniqueHealthyEgressIPs  int            `json:"unique_healthy_egress_ips"`
-	ProfiledNodes           int            `json:"profiled_nodes"`
-	UnprofiledNodes         int            `json:"unprofiled_nodes"`
-	NetworkTypeBreakdown    map[string]int `json:"network_type_breakdown"`
-	QualityGradeBreakdown   map[string]int `json:"quality_grade_breakdown"`
+	MatchedNodes           int            `json:"matched_nodes"`
+	HealthyNodes           int            `json:"healthy_nodes"`
+	UniqueEgressIPs        int            `json:"unique_egress_ips"`
+	UniqueHealthyEgressIPs int            `json:"unique_healthy_egress_ips"`
+	ProfiledNodes          int            `json:"profiled_nodes"`
+	UnprofiledNodes        int            `json:"unprofiled_nodes"`
+	NetworkTypeBreakdown   map[string]int `json:"network_type_breakdown"`
+	QualityGradeBreakdown  map[string]int `json:"quality_grade_breakdown"`
 }
 
 type PreviewFilterResponse struct {
@@ -899,6 +900,7 @@ type NodeSummary struct {
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
+	ProfileState                     string    `json:"profile_state"`
 	EgressNetworkType                string    `json:"egress_network_type"`
 	EgressASN                        *int64    `json:"egress_asn,omitempty"`
 	EgressASNName                    string    `json:"egress_asn_name,omitempty"`
@@ -967,6 +969,7 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	if lastEgressAttempt := entry.LastEgressUpdateAttempt.Load(); lastEgressAttempt > 0 {
 		ns.LastEgressUpdateAttempt = time.Unix(0, lastEgressAttempt).UTC().Format(time.RFC3339Nano)
 	}
+	ns.ProfileState = s.resolveNodeProfileState(h, entry)
 	ns.EgressNetworkType = string(entry.GetEgressNetworkType())
 	if asn := entry.GetEgressASN(); asn > 0 {
 		ns.EgressASN = &asn
@@ -1014,6 +1017,36 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 		ns.Tags = []NodeTag{}
 	}
 	return ns
+}
+
+func (s *ControlPlaneService) resolveNodeProfileState(h node.Hash, entry *node.NodeEntry) string {
+	if entry == nil || !entry.HasOutbound() {
+		return "UNAVAILABLE"
+	}
+	if !entry.GetEgressIP().IsValid() {
+		if s != nil && s.ProbeMgr != nil && s.ProbeMgr.IsEgressRunning(h) {
+			return "PROBING_EGRESS"
+		}
+		if entry.LastEgressUpdateAttempt.Load() > 0 {
+			return "PENDING_EGRESS"
+		}
+		return "UNPROBED"
+	}
+	if s != nil && s.ProfileSvc != nil {
+		switch s.ProfileSvc.TaskState(h) {
+		case ipprofile.NodeTaskStateRunning:
+			return "PROFILING"
+		case ipprofile.NodeTaskStateQueued:
+			return "QUEUED_PROFILE"
+		}
+	}
+	if !entry.HasProfile() {
+		return "PENDING_PROFILE"
+	}
+	if entry.GetEgressNetworkType() == model.EgressNetworkTypeUnknown {
+		return "PROFILED_UNKNOWN"
+	}
+	return "PROFILED"
 }
 
 // PreviewFilter returns nodes matching the given filter spec.

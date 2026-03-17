@@ -74,6 +74,7 @@ func NewServerWithAddress(
 	if cp != nil {
 		// System config mutations.
 		authed.Handle("PATCH /api/v1/system/config", HandlePatchSystemConfig(cp))
+		authed.Handle("GET /api/v1/system/tasks/status", HandleSystemTaskStatus(cp))
 		authed.Handle("POST /api/v1/system/actions/reprofile-known-nodes", HandleQueueKnownNodeReprofile(cp))
 
 		// Platforms.

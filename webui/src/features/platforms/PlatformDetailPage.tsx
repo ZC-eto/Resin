@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Info, Link2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -141,11 +141,11 @@ export function PlatformDetailPage() {
     resolver: zodResolver(platformFormSchema),
     defaultValues: defaultPlatformFormValues,
   });
-  const detailEmptyAccountBehavior = editForm.watch("reverse_proxy_empty_account_behavior");
-  const detailProxyAccessMode = editForm.watch("proxy_access_mode");
-  const detailRotationPolicy = editForm.watch("rotation_policy");
-  const detailSubscriptionFilters = editForm.watch("subscription_filters") ?? [];
-  const detailNetworkTypeFilters = editForm.watch("network_type_filters") ?? [];
+  const detailEmptyAccountBehavior = useWatch({ control: editForm.control, name: "reverse_proxy_empty_account_behavior" });
+  const detailProxyAccessMode = useWatch({ control: editForm.control, name: "proxy_access_mode" });
+  const detailRotationPolicy = useWatch({ control: editForm.control, name: "rotation_policy" });
+  const detailSubscriptionFilters = useWatch({ control: editForm.control, name: "subscription_filters" }) ?? [];
+  const detailNetworkTypeFilters = useWatch({ control: editForm.control, name: "network_type_filters" }) ?? [];
 
   useEffect(() => {
     if (!platform) {

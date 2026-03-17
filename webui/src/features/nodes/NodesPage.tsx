@@ -279,6 +279,53 @@ function networkTypeLabel(value: NodeSummary["egress_network_type"] | string | u
   }
 }
 
+function profileStateLabel(value: string | undefined, t: (text: string, options?: Record<string, unknown>) => string): string {
+  switch (value) {
+    case "PROBING_EGRESS":
+      return t("正在探测出口");
+    case "PENDING_EGRESS":
+      return t("待出口探测");
+    case "UNPROBED":
+      return t("未开始探测");
+    case "QUEUED_PROFILE":
+      return t("画像排队中");
+    case "PROFILING":
+      return t("画像检测中");
+    case "PENDING_PROFILE":
+      return t("待画像");
+    case "PROFILED_UNKNOWN":
+      return t("已画像但仍未知");
+    case "PROFILED":
+      return t("已完成画像");
+    case "UNAVAILABLE":
+      return t("节点不可用");
+    default:
+      return value || "-";
+  }
+}
+
+function profileStateBadgeVariant(value: string | undefined): "success" | "warning" | "danger" | "info" | "accent" | "muted" | "neutral" {
+  switch (value) {
+    case "PROBING_EGRESS":
+      return "info";
+    case "PROFILING":
+      return "accent";
+    case "QUEUED_PROFILE":
+    case "PENDING_PROFILE":
+    case "PENDING_EGRESS":
+      return "warning";
+    case "UNPROBED":
+    case "PROFILED_UNKNOWN":
+      return "muted";
+    case "PROFILED":
+      return "success";
+    case "UNAVAILABLE":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
 export function NodesPage() {
   const { t } = useI18n();
   const location = useLocation();
@@ -608,9 +655,17 @@ export function NodesPage() {
         );
       },
     }),
-    col.accessor("egress_network_type", {
-      header: t("网络类型"),
-      cell: (info) => networkTypeLabel(info.getValue(), t),
+      col.accessor("egress_network_type", {
+        header: t("网络类型"),
+        cell: (info) => networkTypeLabel(info.getValue(), t),
+      }),
+    col.accessor("profile_state", {
+      header: t("画像状态"),
+      cell: (info) => (
+        <Badge variant={profileStateBadgeVariant(info.getValue())}>
+          {profileStateLabel(info.getValue(), t)}
+        </Badge>
+      ),
     }),
     col.display({
       id: "reference_latency_ms",
@@ -1099,6 +1154,14 @@ export function NodesPage() {
                     <p>
                       {networkTypeLabel(detailNode.egress_network_type, t)} / {detailNode.egress_profile_source || "-"}
                     </p>
+                  </div>
+                  <div>
+                    <span>{t("画像状态")}</span>
+                    <div>
+                      <Badge variant={profileStateBadgeVariant(detailNode.profile_state)}>
+                        {profileStateLabel(detailNode.profile_state, t)}
+                      </Badge>
+                    </div>
                   </div>
                   <div>
                     <span>{t("参考延迟")}</span>

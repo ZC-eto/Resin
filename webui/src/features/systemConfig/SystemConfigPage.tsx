@@ -12,7 +12,8 @@ import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import i18next, { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
-import { getEnvConfig, getDefaultSystemConfig, getSystemConfig, patchSystemConfig, reprofileKnownNodes } from "./api";
+import { formatDateTime } from "../../lib/time";
+import { getEnvConfig, getDefaultSystemConfig, getSystemConfig, getSystemTaskStatus, patchSystemConfig, reprofileKnownNodes } from "./api";
 import type { RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 type RuntimeConfigForm = {
@@ -318,10 +319,17 @@ export function SystemConfigPage() {
     queryFn: getEnvConfig,
     staleTime: Infinity, // Env config does not change at runtime
   });
+  const taskStatusQuery = useQuery({
+    queryKey: ["system-task-status"],
+    queryFn: getSystemTaskStatus,
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
 
   const baseline = configQuery.data ?? null;
   const defaultBaseline = defaultConfigQuery.data ?? null;
   const envBaseline = envConfigQuery.data ?? null;
+  const taskStatus = taskStatusQuery.data ?? null;
 
   const form = useMemo(() => {
     if (!baseline) {
@@ -771,6 +779,90 @@ export function SystemConfigPage() {
                 <p className="module-description">
                   {t("本地库负责预判明显机房/匿名节点，在线补充主要用来识别住宅类型。保存后立即生效；如需把新规则应用到现有节点，可手动触发一次批量重检。")}
                 </p>
+
+                <div className="syscfg-status-grid">
+                  <div className="syscfg-status-card">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("出口探测")}</span>
+                      <Badge variant={taskStatus?.probe.in_flight_egress ? "info" : "neutral"}>
+                        {taskStatus?.probe.in_flight_egress ? t("运行中") : t("空闲")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.probe.in_flight_egress ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待刷新")}</span>
+                        <p>{taskStatus?.probe.due_egress_nodes ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("未知出口")}</span>
+                        <p>{taskStatus?.probe.unknown_egress_nodes ?? 0}</p>
+                      </div>
+                    </div>
+                    <p className="muted">{t("最近扫描：{{time}}", { time: formatDateTime(taskStatus?.probe.last_egress_scan_at_ns ? new Date(taskStatus.probe.last_egress_scan_at_ns / 1_000_000).toISOString() : "") })}</p>
+                  </div>
+
+                  <div className="syscfg-status-card">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("延迟探测")}</span>
+                      <Badge variant={taskStatus?.probe.in_flight_latency ? "info" : "neutral"}>
+                        {taskStatus?.probe.in_flight_latency ? t("运行中") : t("空闲")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.probe.in_flight_latency ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待刷新")}</span>
+                        <p>{taskStatus?.probe.due_latency_nodes ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("最近扫描")}</span>
+                        <p>{formatDateTime(taskStatus?.probe.last_latency_scan_at_ns ? new Date(taskStatus.probe.last_latency_scan_at_ns / 1_000_000).toISOString() : "") || "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="syscfg-status-card syscfg-status-card-highlight">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("节点画像任务")}</span>
+                      <Badge variant={taskStatus?.ip_profile.running_total ? "accent" : taskStatus?.ip_profile.background_enabled ? "success" : "warning"}>
+                        {taskStatus?.ip_profile.running_total ? t("运行中") : taskStatus?.ip_profile.background_enabled ? t("后台开启") : t("后台关闭")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("排队总数")}</span>
+                        <p>{taskStatus?.ip_profile.queue_total ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("健康优先")}</span>
+                        <p>{taskStatus?.ip_profile.queue_healthy ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.ip_profile.running_total ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待补全")}</span>
+                        <p>{taskStatus?.ip_profile.pending_known_nodes ?? 0}</p>
+                      </div>
+                    </div>
+                    {taskStatus?.ip_profile.last_error ? (
+                      <div className="callout callout-warning" style={{ marginTop: 8 }}>
+                        <AlertTriangle size={14} />
+                        <span>{t("最近画像错误：{{message}}", { message: taskStatus.ip_profile.last_error })}</span>
+                      </div>
+                    ) : (
+                      <p className="muted">{t("最近完成：{{time}}", { time: formatDateTime(taskStatus?.ip_profile.last_finished_at_ns ? new Date(taskStatus.ip_profile.last_finished_at_ns / 1_000_000).toISOString() : "") || "-" })}</p>
+                    )}
+                  </div>
+                </div>
 
                 <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>

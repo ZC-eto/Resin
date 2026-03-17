@@ -1,5 +1,5 @@
 import { apiRequest } from "../../lib/api-client";
-import type { EnvConfig, RuntimeConfig, RuntimeConfigPatch } from "./types";
+import type { EnvConfig, RuntimeConfig, RuntimeConfigPatch, SystemTaskStatus } from "./types";
 
 const path = "/api/v1/system/config";
 
@@ -127,4 +127,8 @@ export async function reprofileKnownNodes(): Promise<{ requested: number; accept
   return await apiRequest(path.replace("/config", "/actions/reprofile-known-nodes"), {
     method: "POST",
   });
+}
+
+export async function getSystemTaskStatus(): Promise<SystemTaskStatus> {
+  return await apiRequest<SystemTaskStatus>(path.replace("/config", "/tasks/status"));
 }

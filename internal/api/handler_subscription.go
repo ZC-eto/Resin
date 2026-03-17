@@ -12,7 +12,15 @@ func subscriptionMatchesKeyword(s service.SubscriptionResponse, keyword string) 
 		return strings.Contains(strings.ToLower(v), keyword)
 	}
 
-	return contains(s.ID) || contains(s.Name) || contains(s.URL) || contains(s.SourceType)
+	if contains(s.ID) || contains(s.Name) || contains(s.URL) || contains(s.SourceType) {
+		return true
+	}
+	for _, source := range s.Sources {
+		if contains(source.Label) || contains(source.URL) || contains(source.Type) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterSubscriptionsByKeyword(subs []service.SubscriptionResponse, rawKeyword string) []service.SubscriptionResponse {

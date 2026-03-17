@@ -15,6 +15,7 @@ import (
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
 )
 
@@ -271,5 +272,81 @@ func TestSeedExistingNodes_DoesNotBlockWhenKnownNodesExceedQueueCapacity(t *test
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("SeedExistingNodes blocked on a full queue")
+	}
+}
+
+func TestSeedExistingNodes_PrioritizesHealthyNodesAndSkipsProfiledNodes(t *testing.T) {
+	svc, _, pool := newTestProfileService(t)
+	svc.runtimeSettings = func() RuntimeSettings {
+		return RuntimeSettings{
+			BackgroundEnabled: true,
+			CacheTTL:          24 * time.Hour,
+		}
+	}
+
+	makeHealthy := func(entry *node.NodeEntry) {
+		outbound := testutil.NewNoopOutbound()
+		entry.Outbound.Store(&outbound)
+	}
+
+	rawHealthy := json.RawMessage(`{"type":"ss","server":"4.4.4.4","port":443}`)
+	hashHealthy := node.HashFromRawOptions(rawHealthy)
+	pool.AddNodeFromSub(hashHealthy, rawHealthy, "sub-healthy")
+	healthyEntry, ok := pool.GetEntry(hashHealthy)
+	if !ok {
+		t.Fatal("healthy entry missing from pool")
+	}
+	healthyEntry.SetEgressIP(netip.MustParseAddr("203.0.113.51"))
+	makeHealthy(healthyEntry)
+
+	rawUnhealthy := json.RawMessage(`{"type":"ss","server":"5.5.5.5","port":443}`)
+	hashUnhealthy := node.HashFromRawOptions(rawUnhealthy)
+	pool.AddNodeFromSub(hashUnhealthy, rawUnhealthy, "sub-unhealthy")
+	unhealthyEntry, ok := pool.GetEntry(hashUnhealthy)
+	if !ok {
+		t.Fatal("unhealthy entry missing from pool")
+	}
+	unhealthyEntry.SetEgressIP(netip.MustParseAddr("203.0.113.52"))
+
+	rawProfiled := json.RawMessage(`{"type":"ss","server":"6.6.6.6","port":443}`)
+	hashProfiled := node.HashFromRawOptions(rawProfiled)
+	pool.AddNodeFromSub(hashProfiled, rawProfiled, "sub-profiled")
+	profiledEntry, ok := pool.GetEntry(hashProfiled)
+	if !ok {
+		t.Fatal("profiled entry missing from pool")
+	}
+	profiledEntry.SetEgressIP(netip.MustParseAddr("203.0.113.53"))
+	makeHealthy(profiledEntry)
+	pool.UpdateNodeProfile(hashProfiled, node.NodeProfile{
+		IP:                 profiledEntry.GetEgressIP(),
+		NetworkType:        model.EgressNetworkTypeDatacenter,
+		Source:             model.EgressProfileSourceLocal,
+		ProfileUpdatedAtNs: time.Now().UnixNano(),
+	})
+
+	got := svc.SeedExistingNodes(false)
+	if got != 2 {
+		t.Fatalf("SeedExistingNodes returned %d, want 2", got)
+	}
+
+	settings := svc.settingsSnapshot()
+
+	if _, ok := svc.resolveQueueMeta(hashHealthy, false, false, settings); !ok {
+		t.Fatal("expected healthy node to be accepted into background queue")
+	}
+	metaUnhealthy, ok := svc.resolveQueueMeta(hashUnhealthy, false, false, settings)
+	if !ok || metaUnhealthy.priority != queuePriorityLow {
+		t.Fatalf("expected unhealthy node to resolve as low priority, got ok=%v priority=%v", ok, metaUnhealthy.priority)
+	}
+	if _, ok := svc.resolveQueueMeta(hashProfiled, false, false, settings); ok {
+		t.Fatal("expected profiled node to be skipped from background queue")
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for svc.Status().QueueTotal != 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if svc.Status().QueueTotal != 2 {
+		t.Fatalf("expected queue total 2, got %d", svc.Status().QueueTotal)
 	}
 }

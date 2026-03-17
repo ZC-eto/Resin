@@ -2,11 +2,14 @@ package topology
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/scanloop"
@@ -14,6 +17,11 @@ import (
 )
 
 const schedulerLookahead = 15 * time.Second
+
+type sourceFailure struct {
+	label string
+	err   error
+}
 
 // SubscriptionScheduler manages periodic subscription updates.
 type SubscriptionScheduler struct {
@@ -186,30 +194,12 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 // (no I/O under lock) while still preventing concurrent diff/apply races.
 func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscription) {
 	attemptStartedNs := time.Now().UnixNano()
-	attemptURL := sub.URL()
-	attemptSourceType := sub.SourceType()
-	attemptContent := sub.Content()
+	attemptSources := sub.Sources()
 	attemptConfigVersion := sub.ConfigVersion()
 
-	// 1. Fetch/read content (lock-free).
-	var (
-		body []byte
-		err  error
-	)
-	if attemptSourceType == subscription.SourceTypeLocal {
-		body = []byte(attemptContent)
-	} else {
-		body, err = s.Fetcher(attemptURL)
-		if err != nil {
-			s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "fetch", err)
-			return
-		}
-	}
-
-	// 2. Parse (lock-free).
-	parsed, err := subscription.ParseGeneralSubscription(body)
+	parsed, err := s.parseSubscriptionSources(attemptSources)
 	if err != nil {
-		s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "parse", err)
+		s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "sources", err)
 		return
 	}
 
@@ -288,6 +278,72 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	if s.onSubUpdated != nil {
 		s.onSubUpdated(sub)
 	}
+}
+
+func (s *SubscriptionScheduler) parseSubscriptionSources(sources []model.SubscriptionSource) ([]subscription.ParsedNode, error) {
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("subscription has no configured sources")
+	}
+
+	failures := make([]sourceFailure, 0)
+	parsedAll := make([]subscription.ParsedNode, 0, 64)
+	enabledCount := 0
+
+	for index, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		enabledCount++
+
+		var (
+			body []byte
+			err  error
+		)
+		if source.Type == subscription.SourceTypeLocal {
+			body = []byte(source.Content)
+		} else {
+			body, err = s.Fetcher(source.URL)
+		}
+		if err == nil {
+			var parsed []subscription.ParsedNode
+			parsed, err = subscription.ParseGeneralSubscription(body)
+			if err == nil {
+				parsedAll = append(parsedAll, parsed...)
+				continue
+			}
+		}
+
+		label := source.Label
+		if label == "" {
+			label = source.ID
+		}
+		if label == "" {
+			label = fmt.Sprintf("source-%d", index+1)
+		}
+		failures = append(failures, sourceFailure{label: label, err: err})
+	}
+
+	if enabledCount == 0 {
+		return nil, fmt.Errorf("subscription has no enabled sources")
+	}
+	if len(parsedAll) > 0 {
+		if len(failures) > 0 {
+			log.Printf("[scheduler] subscription sources partially failed: %s", summarizeSourceFailures(failures))
+		}
+		return parsedAll, nil
+	}
+	return nil, fmt.Errorf("%s", summarizeSourceFailures(failures))
+}
+
+func summarizeSourceFailures(failures []sourceFailure) string {
+	if len(failures) == 0 {
+		return "subscription refresh failed"
+	}
+	parts := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		parts = append(parts, fmt.Sprintf("%s: %v", failure.label, failure.err))
+	}
+	return "all sources failed: " + strings.Join(parts, "; ")
 }
 
 // handleUpdateFailure applies a fetch/parse failure to subscription state.

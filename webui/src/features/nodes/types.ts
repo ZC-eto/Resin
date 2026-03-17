@@ -14,6 +14,7 @@ export type NodeSummary = {
   egress_ip?: string;
   reference_latency_ms?: number;
   region?: string;
+  profile_state?: string;
   egress_network_type: "UNKNOWN" | "RESIDENTIAL" | "DATACENTER" | "MOBILE";
   egress_asn?: number;
   egress_asn_name?: string;

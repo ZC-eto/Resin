@@ -2,6 +2,7 @@ import { apiRequest } from "../../lib/api-client";
 import type {
   PageResponse,
   Subscription,
+  SubscriptionSource,
   SubscriptionCreateInput,
   SubscriptionUpdateInput,
 } from "./types";
@@ -11,16 +12,29 @@ const basePath = "/api/v1/subscriptions";
 type ApiSubscription = Omit<Subscription, "last_checked" | "last_updated" | "last_error"> & {
   source_type?: "remote" | "local";
   content?: string;
+  sources?: SubscriptionSource[] | null;
   last_checked?: string | null;
   last_updated?: string | null;
   last_error?: string | null;
 };
 
 function normalizeSubscription(raw: ApiSubscription): Subscription {
+  const fallbackSourceType = raw.source_type ?? "remote";
+  const fallbackSources: SubscriptionSource[] = Array.isArray(raw.sources) && raw.sources.length
+    ? raw.sources
+    : [{
+      id: "source-1",
+      label: "",
+      type: fallbackSourceType,
+      url: raw.url ?? "",
+      content: raw.content ?? "",
+      enabled: true,
+    }];
   return {
     ...raw,
-    source_type: raw.source_type ?? "remote",
+    source_type: fallbackSourceType,
     content: raw.content ?? "",
+    sources: fallbackSources,
     residential_node_count: typeof raw.residential_node_count === "number" ? raw.residential_node_count : 0,
     datacenter_node_count: typeof raw.datacenter_node_count === "number" ? raw.datacenter_node_count : 0,
     mobile_node_count: typeof raw.mobile_node_count === "number" ? raw.mobile_node_count : 0,

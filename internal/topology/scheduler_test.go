@@ -9,11 +9,13 @@ import (
 	"net/netip"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/platform"
@@ -157,8 +159,8 @@ func TestScheduler_UpdateSubscription_FetchFailure(t *testing.T) {
 
 	sched.UpdateSubscription(sub)
 
-	if sub.GetLastError() != "network error" {
-		t.Fatalf("expected 'network error', got %q", sub.GetLastError())
+	if !strings.Contains(sub.GetLastError(), "network error") {
+		t.Fatalf("expected error containing 'network error', got %q", sub.GetLastError())
 	}
 	if sub.LastCheckedNs.Load() == 0 {
 		t.Fatal("LastCheckedNs should be set on failure")
@@ -231,6 +233,41 @@ func TestScheduler_UpdateSubscription_LocalSubscription_ParseFailure(t *testing.
 	}
 	if pool.Size() != 0 {
 		t.Fatalf("expected empty pool, got %d", pool.Size())
+	}
+}
+
+func TestScheduler_UpdateSubscription_MergesMultipleEnabledSources(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "MultiSource", "https://primary.example/sub", true, false)
+	sub.SetFetchConfig(sub.URL(), int64(time.Hour))
+	sub.SetSources([]model.SubscriptionSource{
+		{ID: "remote-1", Type: subscription.SourceTypeRemote, URL: "https://primary.example/sub", Enabled: true},
+		{ID: "local-1", Type: subscription.SourceTypeLocal, Content: `{"outbounds":[{"type":"vmess","tag":"local-jp","server":"2.2.2.2","server_port":443}]}`, Enabled: true},
+		{ID: "disabled-1", Type: subscription.SourceTypeRemote, URL: "https://disabled.example/sub", Enabled: false},
+	})
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	fetcher := func(url string) ([]byte, error) {
+		switch url {
+		case "https://primary.example/sub":
+			return makeSubscriptionJSON(
+				`{"type":"shadowsocks","tag":"remote-us","server":"1.1.1.1","server_port":443}`,
+			), nil
+		case "https://disabled.example/sub":
+			t.Fatal("disabled source should not be fetched")
+		}
+		return nil, fmt.Errorf("unexpected url %s", url)
+	}
+	sched := newTestScheduler(subMgr, pool, fetcher)
+
+	sched.UpdateSubscription(sub)
+
+	if sub.GetLastError() != "" {
+		t.Fatalf("unexpected last error: %q", sub.GetLastError())
+	}
+	if pool.Size() != 2 {
+		t.Fatalf("expected 2 nodes merged from multiple sources, got %d", pool.Size())
 	}
 }
 
@@ -446,8 +483,8 @@ func TestScheduler_FailurePath_Serialized(t *testing.T) {
 	if fetchCount.Load() != 20 {
 		t.Fatalf("expected 20 fetch attempts, got %d", fetchCount.Load())
 	}
-	if sub.GetLastError() != "fail" {
-		t.Fatalf("expected 'fail' error, got %q", sub.GetLastError())
+	if !strings.Contains(sub.GetLastError(), "fail") {
+		t.Fatalf("expected error containing 'fail', got %q", sub.GetLastError())
 	}
 }
 
