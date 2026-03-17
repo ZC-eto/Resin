@@ -327,11 +327,15 @@ func (s *Service) LookupProfile(ctx context.Context, ip netip.Addr, force bool) 
 	settings := s.settingsSnapshot()
 	if !force {
 		if profile, ok := s.getCached(ip.String(), settings.CacheTTL); ok {
-			return profile, nil
+			if !shouldRefreshCachedUnknownProfile(profile, settings) {
+				return profile, nil
+			}
 		}
 		if profile, ok := s.getPersistentCached(ip.String(), settings.CacheTTL); ok {
-			s.putCached(ip.String(), profile, settings.CacheTTL)
-			return profile, nil
+			if !shouldRefreshCachedUnknownProfile(profile, settings) {
+				s.putCached(ip.String(), profile, settings.CacheTTL)
+				return profile, nil
+			}
 		}
 	}
 
@@ -359,6 +363,24 @@ func (s *Service) LookupProfile(ctx context.Context, ip netip.Addr, force bool) 
 	s.putCached(ip.String(), profile, settings.CacheTTL)
 	s.putPersistentCached(profile)
 	return profile, nil
+}
+
+func shouldRefreshCachedUnknownProfile(profile node.NodeProfile, settings RuntimeSettings) bool {
+	if model.NormalizeEgressNetworkType(string(profile.NetworkType)) != model.EgressNetworkTypeUnknown {
+		return false
+	}
+	if config.NormalizeIPProfileOnlineProvider(string(settings.OnlineProvider)) == config.IPProfileOnlineProviderDisabled {
+		return false
+	}
+	if strings.TrimSpace(settings.OnlineAPIKey) == "" {
+		return false
+	}
+	switch model.NormalizeEgressProfileSource(string(profile.Source)) {
+	case model.EgressProfileSourceOnline, model.EgressProfileSourceLocalPlusOnline:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Service) lookupLocal(ip netip.Addr) (node.NodeProfile, bool) {

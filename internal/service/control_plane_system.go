@@ -172,7 +172,9 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	defer s.configMu.Unlock()
 
 	// 3. Deep-copy current config → apply patch.
-	newCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	currentCfg := s.RuntimeCfg.Load()
+	oldCfg := copyRuntimeConfig(currentCfg)
+	newCfg := copyRuntimeConfig(currentCfg)
 	if verr := parseRuntimeConfigPatch(patchJSON, newCfg); verr != nil {
 		return nil, verr
 	}
@@ -203,8 +205,38 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	// 6. Atomic swap.
 	s.RuntimeCfg.Store(newCfg)
 	s.configVersion = newVersion
+	if s.ProfileSvc != nil {
+		switch {
+		case shouldForceKnownNodeReprofile(oldCfg, newCfg):
+			s.ProfileSvc.SeedExistingNodes(true)
+		case shouldSeedKnownNodeProfiles(oldCfg, newCfg):
+			s.ProfileSvc.SeedExistingNodes(false)
+		}
+	}
 
 	return newCfg, nil
+}
+
+func shouldForceKnownNodeReprofile(oldCfg, newCfg *config.RuntimeConfig) bool {
+	if oldCfg == nil || newCfg == nil {
+		return false
+	}
+	if oldCfg.IPProfileLocalLookupEnabled != newCfg.IPProfileLocalLookupEnabled {
+		return true
+	}
+	oldProvider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(oldCfg.IPProfileOnlineProvider))
+	newProvider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(newCfg.IPProfileOnlineProvider))
+	if oldProvider != newProvider {
+		return true
+	}
+	return strings.TrimSpace(oldCfg.IPProfileOnlineAPIKey) != strings.TrimSpace(newCfg.IPProfileOnlineAPIKey)
+}
+
+func shouldSeedKnownNodeProfiles(oldCfg, newCfg *config.RuntimeConfig) bool {
+	if oldCfg == nil || newCfg == nil {
+		return false
+	}
+	return !oldCfg.IPProfileBackgroundEnabled && newCfg.IPProfileBackgroundEnabled
 }
 
 func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
