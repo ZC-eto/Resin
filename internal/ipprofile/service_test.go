@@ -2,9 +2,11 @@ package ipprofile
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +218,58 @@ func TestLookupProfile_RefreshesUnknownCacheWhenOnlineProviderBecomesAvailable(t
 	}
 	if persisted.EgressNetworkType != string(model.EgressNetworkTypeResidential) {
 		t.Fatalf("persistent network type: got %q, want %q", persisted.EgressNetworkType, model.EgressNetworkTypeResidential)
+	}
+}
+
+func TestSeedExistingNodes_DoesNotBlockWhenKnownNodesExceedQueueCapacity(t *testing.T) {
+	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	svc := NewService(Config{
+		Pool:                pool,
+		Engine:              engine,
+		BackgroundBatchSize: 1,
+		RuntimeSettings: func() RuntimeSettings {
+			return RuntimeSettings{
+				BackgroundEnabled: true,
+				CacheTTL:          24 * time.Hour,
+			}
+		},
+	})
+	defer svc.Stop()
+
+	for i := 0; i < 32; i++ {
+		raw := json.RawMessage(fmt.Sprintf(`{"type":"ss","server":"1.1.1.%d","port":%d}`, i+1, 443+i))
+		hash := node.HashFromRawOptions(raw)
+		subID := "sub-" + strconv.Itoa(i)
+		pool.AddNodeFromSub(hash, raw, subID)
+		entry, ok := pool.GetEntry(hash)
+		if !ok {
+			t.Fatalf("entry %d missing from pool", i)
+		}
+		entry.SetEgressIP(netip.MustParseAddr("203.0.113." + strconv.Itoa((i%200)+1)))
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- svc.SeedExistingNodes(false)
+	}()
+
+	select {
+	case got := <-done:
+		if got != 32 {
+			t.Fatalf("SeedExistingNodes returned %d, want 32", got)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("SeedExistingNodes blocked on a full queue")
 	}
 }

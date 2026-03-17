@@ -240,19 +240,28 @@ func (s *Service) SeedExistingNodes(force bool) int {
 	if s == nil || s.pool == nil {
 		return 0
 	}
-	count := 0
+	hashes := make([]node.Hash, 0, 256)
 	s.pool.RangeNodes(func(hash node.Hash, entry *node.NodeEntry) bool {
 		if entry.GetEgressIP().IsValid() {
-			if force {
-				s.EnqueueForce(hash)
-			} else {
-				s.Enqueue(hash)
-			}
-			count++
+			hashes = append(hashes, hash)
 		}
 		return true
 	})
-	return count
+	if len(hashes) == 0 {
+		return 0
+	}
+	go s.enqueueSeedBatch(hashes, force)
+	return len(hashes)
+}
+
+func (s *Service) enqueueSeedBatch(hashes []node.Hash, force bool) {
+	for _, hash := range hashes {
+		if force {
+			s.EnqueueForce(hash)
+			continue
+		}
+		s.Enqueue(hash)
+	}
 }
 
 func (s *Service) run() {
