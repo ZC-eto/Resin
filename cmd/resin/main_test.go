@@ -66,6 +66,21 @@ func TestAuthVersionStartupWarning_V1(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeEnvDefaults_BackfillsStaleCleanupWindowForLegacyConfig(t *testing.T) {
+	cfg := &config.RuntimeConfig{
+		StaleNodeCleanupEnabled: false,
+		StaleNodeCleanupWindow:  0,
+	}
+
+	got := applyRuntimeEnvDefaults(cfg, nil)
+	if got == nil {
+		t.Fatal("applyRuntimeEnvDefaults returned nil")
+	}
+	if time.Duration(got.StaleNodeCleanupWindow) != 7*24*time.Hour {
+		t.Fatalf("stale cleanup window = %v, want 168h", time.Duration(got.StaleNodeCleanupWindow))
+	}
+}
+
 func TestBootstrapTopology_CreatesDefaultPlatformWhenMissing(t *testing.T) {
 	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
 	if err != nil {

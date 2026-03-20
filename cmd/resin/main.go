@@ -114,6 +114,10 @@ func applyRuntimeEnvDefaults(runtimeCfg *config.RuntimeConfig, envCfg *config.En
 	if runtimeCfg == nil {
 		runtimeCfg = config.NewDefaultRuntimeConfig()
 	}
+	defaults := config.NewDefaultRuntimeConfig()
+	if time.Duration(runtimeCfg.StaleNodeCleanupWindow) <= 0 {
+		runtimeCfg.StaleNodeCleanupWindow = defaults.StaleNodeCleanupWindow
+	}
 	if envCfg == nil {
 		return runtimeCfg
 	}
