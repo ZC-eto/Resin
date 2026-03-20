@@ -646,6 +646,38 @@ func TestScanEgress_DoesNotRescanKnownEgressBeforeConfiguredInterval(t *testing.
 	}
 }
 
+func TestProbeManagerStatus_CountsKnownAndUnknownEgressNodes(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	knownHash := node.HashFromRawOptions([]byte(`{"type":"known-egress"}`))
+	unknownHash := node.HashFromRawOptions([]byte(`{"type":"unknown-egress"}`))
+	pool.AddNodeFromSub(knownHash, []byte(`{"type":"known-egress"}`), "sub1")
+	pool.AddNodeFromSub(unknownHash, []byte(`{"type":"unknown-egress"}`), "sub1")
+
+	knownEntry, _ := pool.GetEntry(knownHash)
+	unknownEntry, _ := pool.GetEntry(unknownHash)
+	storeOutbound(knownEntry)
+	storeOutbound(unknownEntry)
+	knownEntry.SetEgressIP(netip.MustParseAddr("203.0.113.30"))
+	knownEntry.LastEgressUpdateAttempt.Store(time.Now().UnixNano())
+	unknownEntry.LastEgressUpdateAttempt.Store(time.Now().UnixNano())
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+	})
+
+	status := mgr.Status()
+	if status.KnownEgressNodes != 1 {
+		t.Fatalf("known_egress_nodes=%d, want 1", status.KnownEgressNodes)
+	}
+	if status.UnknownEgressNodes != 1 {
+		t.Fatalf("unknown_egress_nodes=%d, want 1", status.UnknownEgressNodes)
+	}
+}
+
 // TestParseCloudflareTrace_Success verifies IP extraction from trace body.
 func TestParseCloudflareTrace_Success(t *testing.T) {
 	body := []byte("fl=abc\nip=1.2.3.4\nloc=US\nts=12345")

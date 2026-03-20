@@ -49,6 +49,8 @@ type RuntimeConfig struct {
 	IPProfileCacheTTL                Duration `json:"ip_profile_cache_ttl"`
 	IPProfileBackgroundEnabled       bool     `json:"ip_profile_background_enabled"`
 	IPProfileRefreshOnEgressChange   bool     `json:"ip_profile_refresh_on_egress_change"`
+	StaleNodeCleanupEnabled          bool     `json:"stale_node_cleanup_enabled"`
+	StaleNodeCleanupWindow           Duration `json:"stale_node_cleanup_window"`
 
 	// P2C
 	P2CLatencyWindow   Duration `json:"p2c_latency_window"`
@@ -86,6 +88,8 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 		IPProfileCacheTTL:                Duration(30 * 24 * time.Hour),
 		IPProfileBackgroundEnabled:       true,
 		IPProfileRefreshOnEgressChange:   true,
+		StaleNodeCleanupEnabled:          false,
+		StaleNodeCleanupWindow:           Duration(7 * 24 * time.Hour),
 
 		P2CLatencyWindow:   Duration(10 * time.Minute),
 		LatencyDecayWindow: Duration(10 * time.Minute),

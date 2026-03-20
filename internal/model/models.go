@@ -145,6 +145,9 @@ type NodeDynamic struct {
 	EgressIPChangeCountTotal           int64  `json:"egress_ip_change_count_total"`
 	LastEgressIPChangeAtNs             int64  `json:"last_egress_ip_change_at_ns"`
 	CircuitOpenCountTotal              int64  `json:"circuit_open_count_total"`
+	StaleCleanupWindowStartedAtNs      int64  `json:"stale_cleanup_window_started_at_ns"`
+	StaleCleanupLastObservedProbeAtNs  int64  `json:"stale_cleanup_last_observed_probe_at_ns"`
+	StaleCleanupFailedProbeCount       int64  `json:"stale_cleanup_failed_probe_count"`
 }
 
 // EgressProfileCacheEntry stores per-egress-IP profile snapshots.

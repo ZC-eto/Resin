@@ -33,6 +33,12 @@ func TestNewDefaultRuntimeConfig(t *testing.T) {
 	if cfg.IPProfileOnlineRequestsPerMinute != 120 {
 		t.Errorf("IPProfileOnlineRequestsPerMinute: got %d, want 120", cfg.IPProfileOnlineRequestsPerMinute)
 	}
+	if cfg.StaleNodeCleanupEnabled {
+		t.Errorf("StaleNodeCleanupEnabled: got %v, want false", cfg.StaleNodeCleanupEnabled)
+	}
+	if time.Duration(cfg.StaleNodeCleanupWindow) != 7*24*time.Hour {
+		t.Errorf("StaleNodeCleanupWindow: got %v, want 168h", time.Duration(cfg.StaleNodeCleanupWindow))
+	}
 }
 
 func TestRuntimeConfig_JSONRoundTrip(t *testing.T) {
@@ -130,6 +136,8 @@ func TestRuntimeConfig_JSONFieldNames(t *testing.T) {
 		"ip_profile_cache_ttl",
 		"ip_profile_background_enabled",
 		"ip_profile_refresh_on_egress_change",
+		"stale_node_cleanup_enabled",
+		"stale_node_cleanup_window",
 		"p2c_latency_window",
 		"latency_decay_window",
 		"cache_flush_interval",

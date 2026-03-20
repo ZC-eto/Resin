@@ -90,6 +90,9 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 			LastLatencyProbeAttemptNs:          700,
 			LastAuthorityLatencyProbeAttemptNs: 800,
 			LastEgressUpdateAttemptNs:          900,
+			StaleCleanupWindowStartedAtNs:      1000,
+			StaleCleanupLastObservedProbeAtNs:  1100,
+			StaleCleanupFailedProbeCount:       2,
 		},
 	}
 	if err := repo.BulkUpsertNodesDynamic(nodes); err != nil {
@@ -110,6 +113,11 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 		loaded[0].LastAuthorityLatencyProbeAttemptNs != 800 ||
 		loaded[0].LastEgressUpdateAttemptNs != 900 {
 		t.Fatalf("unexpected probe attempt fields: %+v", loaded[0])
+	}
+	if loaded[0].StaleCleanupWindowStartedAtNs != 1000 ||
+		loaded[0].StaleCleanupLastObservedProbeAtNs != 1100 ||
+		loaded[0].StaleCleanupFailedProbeCount != 2 {
+		t.Fatalf("unexpected stale cleanup fields: %+v", loaded[0])
 	}
 
 	// Update.

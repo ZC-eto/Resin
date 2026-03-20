@@ -355,6 +355,11 @@ func (a *resinApp) startBackgroundServices() {
 	a.topoRuntime.ephemeralCleaner.Start()
 	log.Println("Ephemeral cleaner started (batch 2)")
 
+	if a.topoRuntime.staleCleaner != nil {
+		a.topoRuntime.staleCleaner.Start()
+		log.Println("Stale node cleaner started (batch 2)")
+	}
+
 	// --- Step 8 Batch 3: Subscription scheduler (force full refresh on start) ---
 	a.topoRuntime.scheduler.Start()
 	a.topoRuntime.scheduler.ForceRefreshAllAsync()
@@ -380,6 +385,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Router:         a.topoRuntime.router,
 		ProbeMgr:       a.topoRuntime.probeMgr,
 		ProfileSvc:     a.topoRuntime.profileSvc,
+		StaleCleaner:   a.topoRuntime.staleCleaner,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
 	}
@@ -552,6 +558,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.topoRuntime.ephemeralCleaner.Stop()
 	log.Println("Ephemeral cleaner stopped")
+
+	if a.topoRuntime.staleCleaner != nil {
+		a.topoRuntime.staleCleaner.Stop()
+		log.Println("Stale node cleaner stopped")
+	}
 
 	a.topoRuntime.scheduler.Stop()
 	log.Println("Subscription scheduler stopped")

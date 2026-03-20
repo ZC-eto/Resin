@@ -100,6 +100,9 @@ func (r *CacheRepo) BulkUpsertNodesDynamic(nodes []model.NodeDynamic) error {
 				n.EgressIPChangeCountTotal,
 				n.LastEgressIPChangeAtNs,
 				n.CircuitOpenCountTotal,
+				n.StaleCleanupWindowStartedAtNs,
+				n.StaleCleanupLastObservedProbeAtNs,
+				n.StaleCleanupFailedProbeCount,
 			)
 			return err
 		},
@@ -127,7 +130,9 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 		       egress_network_type, egress_asn, egress_asn_name, egress_asn_type, egress_provider,
 		       egress_profile_source, egress_profile_updated_at_ns, quality_score, quality_grade,
 		       egress_probe_success_count_total, egress_probe_failure_count_total, egress_ip_change_count_total,
-		       last_egress_ip_change_at_ns, circuit_open_count_total
+		       last_egress_ip_change_at_ns, circuit_open_count_total,
+		       stale_cleanup_window_started_at_ns, stale_cleanup_last_observed_probe_at_ns,
+		       stale_cleanup_failed_probe_count
 		FROM nodes_dynamic`)
 	if err != nil {
 		return nil, err
@@ -161,6 +166,9 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 			&n.EgressIPChangeCountTotal,
 			&n.LastEgressIPChangeAtNs,
 			&n.CircuitOpenCountTotal,
+			&n.StaleCleanupWindowStartedAtNs,
+			&n.StaleCleanupLastObservedProbeAtNs,
+			&n.StaleCleanupFailedProbeCount,
 		); err != nil {
 			return nil, err
 		}
@@ -493,6 +501,9 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 				n.EgressIPChangeCountTotal,
 				n.LastEgressIPChangeAtNs,
 				n.CircuitOpenCountTotal,
+				n.StaleCleanupWindowStartedAtNs,
+				n.StaleCleanupLastObservedProbeAtNs,
+				n.StaleCleanupFailedProbeCount,
 			)
 			return err
 		}},
@@ -552,9 +563,11 @@ const (
 			egress_network_type, egress_asn, egress_asn_name, egress_asn_type, egress_provider,
 			egress_profile_source, egress_profile_updated_at_ns, quality_score, quality_grade,
 			egress_probe_success_count_total, egress_probe_failure_count_total, egress_ip_change_count_total,
-			last_egress_ip_change_at_ns, circuit_open_count_total
+			last_egress_ip_change_at_ns, circuit_open_count_total,
+			stale_cleanup_window_started_at_ns, stale_cleanup_last_observed_probe_at_ns,
+			stale_cleanup_failed_probe_count
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(hash) DO UPDATE SET
 			failure_count                          = excluded.failure_count,
 			circuit_open_since                     = excluded.circuit_open_since,
@@ -577,7 +590,10 @@ const (
 			egress_probe_failure_count_total       = excluded.egress_probe_failure_count_total,
 			egress_ip_change_count_total           = excluded.egress_ip_change_count_total,
 			last_egress_ip_change_at_ns            = excluded.last_egress_ip_change_at_ns,
-			circuit_open_count_total               = excluded.circuit_open_count_total`
+			circuit_open_count_total               = excluded.circuit_open_count_total,
+			stale_cleanup_window_started_at_ns     = excluded.stale_cleanup_window_started_at_ns,
+			stale_cleanup_last_observed_probe_at_ns = excluded.stale_cleanup_last_observed_probe_at_ns,
+			stale_cleanup_failed_probe_count       = excluded.stale_cleanup_failed_probe_count`
 
 	upsertNodeLatencySQL = `INSERT INTO node_latency (node_hash, domain, ewma_ns, last_updated_ns)
 		 VALUES (?, ?, ?, ?)

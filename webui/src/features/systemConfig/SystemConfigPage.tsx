@@ -37,6 +37,8 @@ type RuntimeConfigForm = {
   ip_profile_cache_ttl: string;
   ip_profile_background_enabled: boolean;
   ip_profile_refresh_on_egress_change: boolean;
+  stale_node_cleanup_enabled: boolean;
+  stale_node_cleanup_window: string;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;
@@ -64,6 +66,8 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
   "ip_profile_cache_ttl",
   "ip_profile_background_enabled",
   "ip_profile_refresh_on_egress_change",
+  "stale_node_cleanup_enabled",
+  "stale_node_cleanup_window",
   "p2c_latency_window",
   "latency_decay_window",
   "cache_flush_interval",
@@ -91,6 +95,8 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   ip_profile_cache_ttl: "画像缓存保留时长",
   ip_profile_background_enabled: "启用后台画像补全",
   ip_profile_refresh_on_egress_change: "出口变化后自动刷新画像",
+  stale_node_cleanup_enabled: "启用长期失效节点自动清理",
+  stale_node_cleanup_window: "长期失效节点清理窗口",
   p2c_latency_window: "P2C 延迟衰减窗口",
   latency_decay_window: "历史延迟衰减窗口",
   cache_flush_interval: "缓存异步刷盘间隔",
@@ -142,6 +148,8 @@ function configToForm(config: RuntimeConfig): RuntimeConfigForm {
     ip_profile_cache_ttl: config.ip_profile_cache_ttl,
     ip_profile_background_enabled: config.ip_profile_background_enabled,
     ip_profile_refresh_on_egress_change: config.ip_profile_refresh_on_egress_change,
+    stale_node_cleanup_enabled: config.stale_node_cleanup_enabled,
+    stale_node_cleanup_window: config.stale_node_cleanup_window,
     p2c_latency_window: config.p2c_latency_window,
     latency_decay_window: config.latency_decay_window,
     cache_flush_interval: config.cache_flush_interval,
@@ -241,6 +249,8 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
     ip_profile_cache_ttl: parseDurationField("画像缓存保留时长", form.ip_profile_cache_ttl),
     ip_profile_background_enabled: form.ip_profile_background_enabled,
     ip_profile_refresh_on_egress_change: form.ip_profile_refresh_on_egress_change,
+    stale_node_cleanup_enabled: form.stale_node_cleanup_enabled,
+    stale_node_cleanup_window: parseDurationField("长期失效节点清理窗口", form.stale_node_cleanup_window),
     p2c_latency_window: parseDurationField("P2C 延迟衰减窗口", form.p2c_latency_window),
     latency_decay_window: parseDurationField("历史延迟衰减窗口", form.latency_decay_window),
     cache_flush_interval: parseDurationField("缓存异步刷盘间隔", form.cache_flush_interval),
@@ -801,8 +811,15 @@ export function SystemConfigPage() {
                         <span>{t("未知出口")}</span>
                         <p>{taskStatus?.probe.unknown_egress_nodes ?? 0}</p>
                       </div>
+                      <div>
+                        <span>{t("已知出口")}</span>
+                        <p>{taskStatus?.probe.known_egress_nodes ?? 0}</p>
+                      </div>
                     </div>
                     <p className="muted">{t("最近扫描：{{time}}", { time: formatDateTime(taskStatus?.probe.last_egress_scan_at_ns ? new Date(taskStatus.probe.last_egress_scan_at_ns / 1_000_000).toISOString() : "") })}</p>
+                    <p className="muted" style={{ marginTop: "8px" }}>
+                      {t("扫描循环会常驻运行，但只有到达探测间隔的节点才会入队；未知出口节点按重试上限逐步重试。")}
+                    </p>
                   </div>
 
                   <div className="syscfg-status-card">
@@ -849,7 +866,7 @@ export function SystemConfigPage() {
                         <p>{taskStatus?.ip_profile.running_total ?? 0}</p>
                       </div>
                       <div>
-                        <span>{t("待补全")}</span>
+                        <span>{t("待画像已知出口")}</span>
                         <p>{taskStatus?.ip_profile.pending_known_nodes ?? 0}</p>
                       </div>
                     </div>
@@ -861,6 +878,11 @@ export function SystemConfigPage() {
                     ) : (
                       <p className="muted">{t("最近完成：{{time}}", { time: formatDateTime(taskStatus?.ip_profile.last_finished_at_ns ? new Date(taskStatus.ip_profile.last_finished_at_ns / 1_000_000).toISOString() : "") || "-" })}</p>
                     )}
+                    {(taskStatus?.ip_profile.pending_known_nodes ?? 0) === 0 && (taskStatus?.probe.unknown_egress_nodes ?? 0) > 0 ? (
+                      <p className="muted" style={{ marginTop: "8px" }}>
+                        {t("当前仍有大量未知出口节点停留在出口探测阶段；画像任务只会处理已拿到出口 IP 的节点。")}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 
@@ -993,6 +1015,70 @@ export function SystemConfigPage() {
                     <RefreshCw size={16} className={queueKnownNodesMutation.isPending ? "spin" : undefined} />
                     {queueKnownNodesMutation.isPending ? t("提交中...") : t("重检当前已知出口 IP")}
                   </Button>
+                </div>
+              </section>
+
+              <section className="syscfg-section">
+                <h4>{t("长期失效节点清理")}</h4>
+                <p className="module-description">
+                  {t("对持续多轮探测都失败的节点执行全局硬删除。关闭时不会自动清理；开启后会根据失败窗口与真实探测时间推进决定是否删除。")}
+                </p>
+
+                <div className="syscfg-status-grid">
+                  <div className="syscfg-status-card">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("自动清理任务")}</span>
+                      <Badge variant={taskStatus?.stale_cleanup.enabled ? "warning" : "neutral"}>
+                        {taskStatus?.stale_cleanup.enabled ? t("后台开启") : t("后台关闭")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("跟踪候选")}</span>
+                        <p>{taskStatus?.stale_cleanup.tracked_candidates ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("上轮删除")}</span>
+                        <p>{taskStatus?.stale_cleanup.deleted_last_run ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("最近扫描")}</span>
+                        <p>{formatDateTime(taskStatus?.stale_cleanup.last_run_at_ns ? new Date(taskStatus.stale_cleanup.last_run_at_ns / 1_000_000).toISOString() : "") || "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span className="field-label" style={{ margin: 0, fontWeight: 500 }}>{t("启用长期失效节点自动清理")}</span>
+                      {renderRestoreButton("stale_node_cleanup_enabled")}
+                    </div>
+                    <Switch
+                      checked={form.stale_node_cleanup_enabled}
+                      onChange={(event) => setFormField("stale_node_cleanup_enabled", event.target.checked)}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-grid" style={{ marginTop: "16px" }}>
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-stale-cleanup-window" style={{ margin: 0 }}>
+                        {t("长期失效节点清理窗口")}
+                      </label>
+                      {renderRestoreButton("stale_node_cleanup_window")}
+                    </div>
+                    <Input
+                      id="sys-stale-cleanup-window"
+                      value={form.stale_node_cleanup_window}
+                      onChange={(event) => setFormField("stale_node_cleanup_window", event.target.value)}
+                    />
+                    <p className="muted" style={{ marginTop: "6px" }}>
+                      {t("例如 72h 或 168h。只有失败窗口跨越这段时间且期间持续观察到失败探测，节点才会被全局删除。")}
+                    </p>
+                  </div>
                 </div>
               </section>
 

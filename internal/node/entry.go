@@ -31,30 +31,33 @@ type NodeEntry struct {
 	LastError       string
 
 	// Atomic dynamic fields for concurrent hot-path reads.
-	FailureCount     atomic.Int32
-	CircuitOpenSince atomic.Int64               // unix-nano; 0 = not open
-	egressIP         atomic.Pointer[netip.Addr] // nil before first store
-	egressRegion     atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
-	LastEgressUpdate atomic.Int64               // unix-nano of last successful egress-IP sample
-	egressNetworkType atomic.Pointer[string]
-	egressASN         atomic.Int64
-	egressASNName     atomic.Pointer[string]
-	egressASNType     atomic.Pointer[string]
-	egressProvider    atomic.Pointer[string]
-	egressProfileSource atomic.Pointer[string]
-	LastEgressProfileUpdated atomic.Int64
-	QualityScore      atomic.Int32
-	qualityGrade      atomic.Pointer[string]
+	FailureCount                 atomic.Int32
+	CircuitOpenSince             atomic.Int64               // unix-nano; 0 = not open
+	egressIP                     atomic.Pointer[netip.Addr] // nil before first store
+	egressRegion                 atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
+	LastEgressUpdate             atomic.Int64               // unix-nano of last successful egress-IP sample
+	egressNetworkType            atomic.Pointer[string]
+	egressASN                    atomic.Int64
+	egressASNName                atomic.Pointer[string]
+	egressASNType                atomic.Pointer[string]
+	egressProvider               atomic.Pointer[string]
+	egressProfileSource          atomic.Pointer[string]
+	LastEgressProfileUpdated     atomic.Int64
+	QualityScore                 atomic.Int32
+	qualityGrade                 atomic.Pointer[string]
 	EgressProbeSuccessCountTotal atomic.Int64
 	EgressProbeFailureCountTotal atomic.Int64
-	EgressIPChangeCountTotal atomic.Int64
-	LastEgressIPChangeAt atomic.Int64
-	CircuitOpenCountTotal atomic.Int64
+	EgressIPChangeCountTotal     atomic.Int64
+	LastEgressIPChangeAt         atomic.Int64
+	CircuitOpenCountTotal        atomic.Int64
 	// Probe-attempt timestamps (unix-nano). These are updated regardless of
 	// probe success/failure, and are used by probe schedulers.
 	LastLatencyProbeAttempt          atomic.Int64
 	LastAuthorityLatencyProbeAttempt atomic.Int64
 	LastEgressUpdateAttempt          atomic.Int64
+	StaleCleanupWindowStartedAt      atomic.Int64
+	StaleCleanupLastObservedProbeAt  atomic.Int64
+	StaleCleanupFailedProbeCount     atomic.Int64
 	LatencyTable                     *LatencyTable // per-domain latency stats; nil if not initialized
 
 	// Outbound instance for this node.
@@ -312,4 +315,51 @@ func (e *NodeEntry) GetLastError() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.LastError
+}
+
+// ResetStaleCleanupWindow clears the persisted stale-cleanup failure window.
+// Returns true when any field changed.
+func (e *NodeEntry) ResetStaleCleanupWindow() bool {
+	if e == nil {
+		return false
+	}
+	changed := false
+	if e.StaleCleanupWindowStartedAt.Swap(0) != 0 {
+		changed = true
+	}
+	if e.StaleCleanupLastObservedProbeAt.Swap(0) != 0 {
+		changed = true
+	}
+	if e.StaleCleanupFailedProbeCount.Swap(0) != 0 {
+		changed = true
+	}
+	return changed
+}
+
+// ObserveFailedProbe records a newly observed failed probe timestamp for the
+// stale-cleanup window. If resetWindow is true, any previous window is
+// discarded and the current probe starts a new one. Returns true when state changed.
+func (e *NodeEntry) ObserveFailedProbe(observedAtNs int64, resetWindow bool) bool {
+	if e == nil || observedAtNs <= 0 {
+		return false
+	}
+
+	currentObserved := e.StaleCleanupLastObservedProbeAt.Load()
+	if !resetWindow && currentObserved == observedAtNs {
+		return false
+	}
+
+	if resetWindow || currentObserved == 0 {
+		e.StaleCleanupWindowStartedAt.Store(observedAtNs)
+		e.StaleCleanupLastObservedProbeAt.Store(observedAtNs)
+		e.StaleCleanupFailedProbeCount.Store(1)
+		return true
+	}
+
+	if e.StaleCleanupWindowStartedAt.Load() == 0 {
+		e.StaleCleanupWindowStartedAt.Store(observedAtNs)
+	}
+	e.StaleCleanupLastObservedProbeAt.Store(observedAtNs)
+	e.StaleCleanupFailedProbeCount.Add(1)
+	return true
 }

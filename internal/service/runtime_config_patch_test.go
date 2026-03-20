@@ -86,6 +86,8 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 		"reverse_proxy_log_req_headers_max_bytes": 2048,
 		"p2c_latency_window":                      "7m",
 		"cache_flush_interval":                    "30s",
+		"stale_node_cleanup_enabled":              true,
+		"stale_node_cleanup_window":               "96h",
 	}
 	body, err := json.Marshal(patch)
 	if err != nil {
@@ -109,12 +111,20 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 	if time.Duration(updated.CacheFlushInterval) != 30*time.Second {
 		t.Fatalf("cache_flush_interval=%v, want 30s", time.Duration(updated.CacheFlushInterval))
 	}
+	if !updated.StaleNodeCleanupEnabled {
+		t.Fatal("stale_node_cleanup_enabled should be true after patch")
+	}
+	if time.Duration(updated.StaleNodeCleanupWindow) != 96*time.Hour {
+		t.Fatalf("stale_node_cleanup_window=%v, want 96h", time.Duration(updated.StaleNodeCleanupWindow))
+	}
 
 	live := h.runtimeCfg.Load()
 	if !live.RequestLogEnabled ||
 		live.ReverseProxyLogReqHeadersMaxBytes != 2048 ||
 		time.Duration(live.P2CLatencyWindow) != 7*time.Minute ||
-		time.Duration(live.CacheFlushInterval) != 30*time.Second {
+		time.Duration(live.CacheFlushInterval) != 30*time.Second ||
+		!live.StaleNodeCleanupEnabled ||
+		time.Duration(live.StaleNodeCleanupWindow) != 96*time.Hour {
 		t.Fatalf("runtime atomic pointer not updated: %+v", live)
 	}
 
@@ -128,7 +138,9 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 	if !persisted.RequestLogEnabled ||
 		persisted.ReverseProxyLogReqHeadersMaxBytes != 2048 ||
 		time.Duration(persisted.P2CLatencyWindow) != 7*time.Minute ||
-		time.Duration(persisted.CacheFlushInterval) != 30*time.Second {
+		time.Duration(persisted.CacheFlushInterval) != 30*time.Second ||
+		!persisted.StaleNodeCleanupEnabled ||
+		time.Duration(persisted.StaleNodeCleanupWindow) != 96*time.Hour {
 		t.Fatalf("persisted config not updated: %+v", persisted)
 	}
 
@@ -147,8 +159,22 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 	if !afterRestart.RequestLogEnabled ||
 		afterRestart.ReverseProxyLogReqHeadersMaxBytes != 2048 ||
 		time.Duration(afterRestart.P2CLatencyWindow) != 7*time.Minute ||
-		time.Duration(afterRestart.CacheFlushInterval) != 30*time.Second {
+		time.Duration(afterRestart.CacheFlushInterval) != 30*time.Second ||
+		!afterRestart.StaleNodeCleanupEnabled ||
+		time.Duration(afterRestart.StaleNodeCleanupWindow) != 96*time.Hour {
 		t.Fatalf("restart did not preserve patched config: %+v", afterRestart)
+	}
+}
+
+func TestPatchRuntimeConfig_RejectsTooSmallStaleCleanupWindow(t *testing.T) {
+	h := newPatchHarness(t)
+
+	_, err := h.cp.PatchRuntimeConfig([]byte(`{"stale_node_cleanup_window":"15s"}`))
+	if err == nil {
+		t.Fatal("expected validation error for stale_node_cleanup_window")
+	}
+	if !strings.Contains(err.Error(), "stale_node_cleanup_window") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

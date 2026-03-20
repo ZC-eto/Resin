@@ -19,6 +19,8 @@ export type RuntimeConfig = {
   ip_profile_cache_ttl: string;
   ip_profile_background_enabled: boolean;
   ip_profile_refresh_on_egress_change: boolean;
+  stale_node_cleanup_enabled: boolean;
+  stale_node_cleanup_window: string;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;
@@ -75,6 +77,7 @@ export type ProbeRuntimeStatus = {
   due_egress_nodes: number;
   due_latency_nodes: number;
   unknown_egress_nodes: number;
+  known_egress_nodes: number;
   last_egress_scan_at_ns: number;
   last_latency_scan_at_ns: number;
 };
@@ -98,4 +101,10 @@ export type IPProfileRuntimeStatus = {
 export type SystemTaskStatus = {
   probe: ProbeRuntimeStatus;
   ip_profile: IPProfileRuntimeStatus;
+  stale_cleanup: {
+    enabled: boolean;
+    tracked_candidates: number;
+    deleted_last_run: number;
+    last_run_at_ns: number;
+  };
 };

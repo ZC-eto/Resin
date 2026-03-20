@@ -1,0 +1,3 @@
+ALTER TABLE nodes_dynamic DROP COLUMN stale_cleanup_failed_probe_count;
+ALTER TABLE nodes_dynamic DROP COLUMN stale_cleanup_last_observed_probe_at_ns;
+ALTER TABLE nodes_dynamic DROP COLUMN stale_cleanup_window_started_at_ns;

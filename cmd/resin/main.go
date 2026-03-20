@@ -39,6 +39,7 @@ type topologyRuntime struct {
 	probeMgr         *probe.ProbeManager
 	scheduler        *topology.SubscriptionScheduler
 	ephemeralCleaner *topology.EphemeralCleaner
+	staleCleaner     *probe.StaleNodeCleaner
 	profileSvc       *ipprofile.Service
 	router           *routing.Router
 	leaseCleaner     *routing.LeaseCleaner
@@ -400,6 +401,28 @@ func newTopologyRuntime(
 	ephemeralCleaner.SetOnNodeEvicted(func(subID string, hash node.Hash) {
 		engine.MarkSubscriptionNode(subID, hash.Hex())
 	})
+	staleCleaner := probe.NewStaleNodeCleaner(probe.StaleNodeCleanerConfig{
+		Pool: pool,
+		RuntimeSettings: func() probe.StaleNodeCleanupSettings {
+			cfg := runtimeConfigSnapshot(runtimeCfg)
+			return probe.StaleNodeCleanupSettings{
+				Enabled:                     cfg.StaleNodeCleanupEnabled,
+				Window:                      time.Duration(cfg.StaleNodeCleanupWindow),
+				MaxEgressTestInterval:       time.Duration(cfg.MaxEgressTestInterval),
+				MaxLatencyTestInterval:      time.Duration(cfg.MaxLatencyTestInterval),
+				MaxAuthorityLatencyInterval: time.Duration(cfg.MaxAuthorityLatencyTestInterval),
+			}
+		},
+		OnStateChanged: func(hash node.Hash) {
+			engine.MarkNodeDynamic(hash.Hex())
+		},
+		DeleteNode: func(hash node.Hash) error {
+			if ok := topology.HardDeleteNode(subManager, pool, hash); !ok {
+				return fmt.Errorf("node %s not found for hard delete", hash.Hex())
+			}
+			return nil
+		},
+	})
 
 	return &topologyRuntime{
 		subManager:       subManager,
@@ -407,6 +430,7 @@ func newTopologyRuntime(
 		probeMgr:         probeMgr,
 		scheduler:        scheduler,
 		ephemeralCleaner: ephemeralCleaner,
+		staleCleaner:     staleCleaner,
 		profileSvc:       profileSvc,
 		outboundMgr:      outboundMgr,
 		singboxBuilder:   singboxBuilder,
@@ -606,6 +630,9 @@ func newFlushReaders(
 				EgressIPChangeCountTotal:           entry.EgressIPChangeCountTotal.Load(),
 				LastEgressIPChangeAtNs:             entry.LastEgressIPChangeAt.Load(),
 				CircuitOpenCountTotal:              entry.CircuitOpenCountTotal.Load(),
+				StaleCleanupWindowStartedAtNs:      entry.StaleCleanupWindowStartedAt.Load(),
+				StaleCleanupLastObservedProbeAtNs:  entry.StaleCleanupLastObservedProbeAt.Load(),
+				StaleCleanupFailedProbeCount:       entry.StaleCleanupFailedProbeCount.Load(),
 			}
 		},
 		ReadNodeLatency: func(key model.NodeLatencyKey) *model.NodeLatency {
@@ -948,6 +975,9 @@ func restoreBootstrapNodeDynamics(
 		entry.EgressIPChangeCountTotal.Store(nd.EgressIPChangeCountTotal)
 		entry.LastEgressIPChangeAt.Store(nd.LastEgressIPChangeAtNs)
 		entry.CircuitOpenCountTotal.Store(nd.CircuitOpenCountTotal)
+		entry.StaleCleanupWindowStartedAt.Store(nd.StaleCleanupWindowStartedAtNs)
+		entry.StaleCleanupLastObservedProbeAt.Store(nd.StaleCleanupLastObservedProbeAtNs)
+		entry.StaleCleanupFailedProbeCount.Store(nd.StaleCleanupFailedProbeCount)
 		if nd.EgressIP != "" {
 			if ip, err := netip.ParseAddr(nd.EgressIP); err == nil {
 				entry.SetEgressIP(ip)
