@@ -17,6 +17,8 @@ import (
 //  4. node_latency: remove entries whose node_hash is missing from nodes_static.
 //  5. leases: remove entries whose platform_id is missing from state.platforms
 //     OR whose node_hash is missing from nodes_static.
+//  6. egress_profile_cache: remove snapshots whose egress_ip is no longer
+//     referenced by any persisted nodes_dynamic row.
 func RepairConsistency(stateDBPath string, cacheDB *sql.DB) error {
 	// ATTACH state.db so we can cross-query.
 	attachSQL := fmt.Sprintf("ATTACH DATABASE %q AS state_db", stateDBPath)
@@ -53,6 +55,14 @@ func RepairConsistency(stateDBPath string, cacheDB *sql.DB) error {
 		`DELETE FROM leases
 		 WHERE platform_id NOT IN (SELECT id FROM state_db.platforms)
 		    OR node_hash NOT IN (SELECT hash FROM nodes_static)`,
+
+		// 6. egress profile cache: orphan to current nodes_dynamic egress IPs
+		`DELETE FROM egress_profile_cache
+		 WHERE egress_ip NOT IN (
+			SELECT DISTINCT egress_ip
+			FROM nodes_dynamic
+			WHERE TRIM(COALESCE(egress_ip, '')) <> ''
+		 )`,
 	}
 
 	for i, s := range stmts {

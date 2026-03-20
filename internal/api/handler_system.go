@@ -98,6 +98,25 @@ func HandlePatchSystemConfig(cp *service.ControlPlaneService) http.HandlerFunc {
 	}
 }
 
+// HandleQueueKnownNodeReprofile returns a handler for POST /api/v1/system/actions/reprofile-known-nodes.
+func HandleQueueKnownNodeReprofile(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result, err := cp.QueueReprofileKnownNodes()
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleSystemTaskStatus returns a handler for GET /api/v1/system/tasks/status.
+func HandleSystemTaskStatus(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, cp.GetSystemTaskStatus())
+	}
+}
+
 func systemEnvConfigSnapshot(envCfg *config.EnvConfig) *systemEnvConfigResponse {
 	if envCfg == nil {
 		return nil

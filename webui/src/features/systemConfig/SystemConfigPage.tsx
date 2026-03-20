@@ -5,13 +5,15 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
+import { Select } from "../../components/ui/Select";
 import { Switch } from "../../components/ui/Switch";
 import { Textarea } from "../../components/ui/Textarea";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import i18next, { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
-import { getEnvConfig, patchSystemConfig, getSystemConfig, getDefaultSystemConfig } from "./api";
+import { formatDateTime } from "../../lib/time";
+import { getEnvConfig, getDefaultSystemConfig, getSystemConfig, getSystemTaskStatus, patchSystemConfig, reprofileKnownNodes } from "./api";
 import type { RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 type RuntimeConfigForm = {
@@ -28,6 +30,13 @@ type RuntimeConfigForm = {
   max_egress_test_interval: string;
   latency_test_url: string;
   latency_authorities_raw: string;
+  ip_profile_local_lookup_enabled: boolean;
+  ip_profile_online_provider: string;
+  ip_profile_online_api_key: string;
+  ip_profile_online_requests_per_minute: string;
+  ip_profile_cache_ttl: string;
+  ip_profile_background_enabled: boolean;
+  ip_profile_refresh_on_egress_change: boolean;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;
@@ -48,6 +57,13 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
   "max_egress_test_interval",
   "latency_test_url",
   "latency_authorities",
+  "ip_profile_local_lookup_enabled",
+  "ip_profile_online_provider",
+  "ip_profile_online_api_key",
+  "ip_profile_online_requests_per_minute",
+  "ip_profile_cache_ttl",
+  "ip_profile_background_enabled",
+  "ip_profile_refresh_on_egress_change",
   "p2c_latency_window",
   "latency_decay_window",
   "cache_flush_interval",
@@ -68,6 +84,13 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   max_egress_test_interval: "出口 IP 更新检查间隔",
   latency_test_url: "延迟测试目标 URL",
   latency_authorities: "延迟测试权威域名列表",
+  ip_profile_local_lookup_enabled: "启用本地画像预判",
+  ip_profile_online_provider: "在线画像提供方",
+  ip_profile_online_api_key: "在线画像密钥",
+  ip_profile_online_requests_per_minute: "在线查询速率上限",
+  ip_profile_cache_ttl: "画像缓存保留时长",
+  ip_profile_background_enabled: "启用后台画像补全",
+  ip_profile_refresh_on_egress_change: "出口变化后自动刷新画像",
   p2c_latency_window: "P2C 延迟衰减窗口",
   latency_decay_window: "历史延迟衰减窗口",
   cache_flush_interval: "缓存异步刷盘间隔",
@@ -91,6 +114,12 @@ const EMPTY_ACCOUNT_BEHAVIOR_LABELS: Record<string, string> = {
   ACCOUNT_HEADER_RULE: "按照全局请求头规则提取 Account",
 };
 
+const PROFILE_PROVIDER_OPTIONS = [
+  { value: "DISABLED", label: "禁用在线补充" },
+  { value: "PROXYCHECK", label: "ProxyCheck 免费方案" },
+  { value: "IPINFO", label: "IPinfo 付费方案" },
+];
+
 function configToForm(config: RuntimeConfig): RuntimeConfigForm {
   return {
     user_agent: config.user_agent,
@@ -106,6 +135,13 @@ function configToForm(config: RuntimeConfig): RuntimeConfigForm {
     max_egress_test_interval: config.max_egress_test_interval,
     latency_test_url: config.latency_test_url,
     latency_authorities_raw: config.latency_authorities.join("\n"),
+    ip_profile_local_lookup_enabled: config.ip_profile_local_lookup_enabled,
+    ip_profile_online_provider: config.ip_profile_online_provider,
+    ip_profile_online_api_key: config.ip_profile_online_api_key,
+    ip_profile_online_requests_per_minute: String(config.ip_profile_online_requests_per_minute),
+    ip_profile_cache_ttl: config.ip_profile_cache_ttl,
+    ip_profile_background_enabled: config.ip_profile_background_enabled,
+    ip_profile_refresh_on_egress_change: config.ip_profile_refresh_on_egress_change,
     p2c_latency_window: config.p2c_latency_window,
     latency_decay_window: config.latency_decay_window,
     cache_flush_interval: config.cache_flush_interval,
@@ -159,6 +195,18 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
   if (!latencyURL.startsWith("http://") && !latencyURL.startsWith("https://")) {
     throw new Error("延迟测试目标 URL 必须是 http/https 地址");
   }
+  const provider = form.ip_profile_online_provider.trim().toUpperCase();
+  if (!PROFILE_PROVIDER_OPTIONS.some((option) => option.value === provider)) {
+    throw new Error("在线画像提供方不合法");
+  }
+  const rpm = parseNonNegativeInt("在线查询速率上限", form.ip_profile_online_requests_per_minute);
+  if (rpm <= 0) {
+    throw new Error("在线查询速率上限必须大于 0");
+  }
+  const apiKey = form.ip_profile_online_api_key.trim();
+  if (provider !== "DISABLED" && !apiKey) {
+    throw new Error("启用在线补充时必须填写在线画像密钥");
+  }
 
   return {
     user_agent: userAgent,
@@ -186,6 +234,13 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
     max_egress_test_interval: parseDurationField("出口 IP 更新检查间隔", form.max_egress_test_interval),
     latency_test_url: latencyURL,
     latency_authorities: parseAuthorities(form.latency_authorities_raw),
+    ip_profile_local_lookup_enabled: form.ip_profile_local_lookup_enabled,
+    ip_profile_online_provider: provider,
+    ip_profile_online_api_key: apiKey,
+    ip_profile_online_requests_per_minute: rpm,
+    ip_profile_cache_ttl: parseDurationField("画像缓存保留时长", form.ip_profile_cache_ttl),
+    ip_profile_background_enabled: form.ip_profile_background_enabled,
+    ip_profile_refresh_on_egress_change: form.ip_profile_refresh_on_egress_change,
     p2c_latency_window: parseDurationField("P2C 延迟衰减窗口", form.p2c_latency_window),
     latency_decay_window: parseDurationField("历史延迟衰减窗口", form.latency_decay_window),
     cache_flush_interval: parseDurationField("缓存异步刷盘间隔", form.cache_flush_interval),
@@ -264,10 +319,17 @@ export function SystemConfigPage() {
     queryFn: getEnvConfig,
     staleTime: Infinity, // Env config does not change at runtime
   });
+  const taskStatusQuery = useQuery({
+    queryKey: ["system-task-status"],
+    queryFn: getSystemTaskStatus,
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
 
   const baseline = configQuery.data ?? null;
   const defaultBaseline = defaultConfigQuery.data ?? null;
   const envBaseline = envConfigQuery.data ?? null;
+  const taskStatus = taskStatusQuery.data ?? null;
 
   const form = useMemo(() => {
     if (!baseline) {
@@ -327,6 +389,19 @@ export function SystemConfigPage() {
       setDraftForm(null);
       setCustomPatchText(null);
       showToast("success", t("配置已更新（{{count}} 项变更）", { count: changedCount }));
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const queueKnownNodesMutation = useMutation({
+    mutationFn: reprofileKnownNodes,
+    onSuccess: (result) => {
+      showToast(
+        "success",
+        t("已提交画像重检任务：{{count}} 个已知出口 IP 节点", { count: result.accepted }),
+      );
     },
     onError: (error) => {
       showToast("error", formatApiErrorMessage(error, t));
@@ -696,6 +771,228 @@ export function SystemConfigPage() {
                       onChange={(event) => setFormField("latency_authorities_raw", event.target.value)}
                     />
                   </div>
+                </div>
+              </section>
+
+              <section className="syscfg-section">
+                <h4>{t("节点画像")}</h4>
+                <p className="module-description">
+                  {t("本地库负责预判明显机房/匿名节点，在线补充主要用来识别住宅类型。保存后立即生效；如需把新规则应用到现有节点，可手动触发一次批量重检。")}
+                </p>
+
+                <div className="syscfg-status-grid">
+                  <div className="syscfg-status-card">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("出口探测")}</span>
+                      <Badge variant={taskStatus?.probe.in_flight_egress ? "info" : "neutral"}>
+                        {taskStatus?.probe.in_flight_egress ? t("运行中") : t("空闲")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.probe.in_flight_egress ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待刷新")}</span>
+                        <p>{taskStatus?.probe.due_egress_nodes ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("未知出口")}</span>
+                        <p>{taskStatus?.probe.unknown_egress_nodes ?? 0}</p>
+                      </div>
+                    </div>
+                    <p className="muted">{t("最近扫描：{{time}}", { time: formatDateTime(taskStatus?.probe.last_egress_scan_at_ns ? new Date(taskStatus.probe.last_egress_scan_at_ns / 1_000_000).toISOString() : "") })}</p>
+                  </div>
+
+                  <div className="syscfg-status-card">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("延迟探测")}</span>
+                      <Badge variant={taskStatus?.probe.in_flight_latency ? "info" : "neutral"}>
+                        {taskStatus?.probe.in_flight_latency ? t("运行中") : t("空闲")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.probe.in_flight_latency ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待刷新")}</span>
+                        <p>{taskStatus?.probe.due_latency_nodes ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("最近扫描")}</span>
+                        <p>{formatDateTime(taskStatus?.probe.last_latency_scan_at_ns ? new Date(taskStatus.probe.last_latency_scan_at_ns / 1_000_000).toISOString() : "") || "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="syscfg-status-card syscfg-status-card-highlight">
+                    <div className="syscfg-status-card-head">
+                      <span>{t("节点画像任务")}</span>
+                      <Badge variant={taskStatus?.ip_profile.running_total ? "accent" : taskStatus?.ip_profile.background_enabled ? "success" : "warning"}>
+                        {taskStatus?.ip_profile.running_total ? t("运行中") : taskStatus?.ip_profile.background_enabled ? t("后台开启") : t("后台关闭")}
+                      </Badge>
+                    </div>
+                    <div className="syscfg-status-card-metrics">
+                      <div>
+                        <span>{t("排队总数")}</span>
+                        <p>{taskStatus?.ip_profile.queue_total ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("健康优先")}</span>
+                        <p>{taskStatus?.ip_profile.queue_healthy ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("执行中")}</span>
+                        <p>{taskStatus?.ip_profile.running_total ?? 0}</p>
+                      </div>
+                      <div>
+                        <span>{t("待补全")}</span>
+                        <p>{taskStatus?.ip_profile.pending_known_nodes ?? 0}</p>
+                      </div>
+                    </div>
+                    {taskStatus?.ip_profile.last_error ? (
+                      <div className="callout callout-warning" style={{ marginTop: 8 }}>
+                        <AlertTriangle size={14} />
+                        <span>{t("最近画像错误：{{message}}", { message: taskStatus.ip_profile.last_error })}</span>
+                      </div>
+                    ) : (
+                      <p className="muted">{t("最近完成：{{time}}", { time: formatDateTime(taskStatus?.ip_profile.last_finished_at_ns ? new Date(taskStatus.ip_profile.last_finished_at_ns / 1_000_000).toISOString() : "") || "-" })}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span className="field-label" style={{ margin: 0, fontWeight: 500 }}>{t("启用本地画像预判")}</span>
+                      {renderRestoreButton("ip_profile_local_lookup_enabled")}
+                    </div>
+                    <Switch
+                      checked={form.ip_profile_local_lookup_enabled}
+                      onChange={(event) => setFormField("ip_profile_local_lookup_enabled", event.target.checked)}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span className="field-label" style={{ margin: 0, fontWeight: 500 }}>{t("启用后台画像补全")}</span>
+                      {renderRestoreButton("ip_profile_background_enabled")}
+                    </div>
+                    <Switch
+                      checked={form.ip_profile_background_enabled}
+                      onChange={(event) => setFormField("ip_profile_background_enabled", event.target.checked)}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span className="field-label" style={{ margin: 0, fontWeight: 500 }}>{t("出口变化后自动刷新画像")}</span>
+                      {renderRestoreButton("ip_profile_refresh_on_egress_change")}
+                    </div>
+                    <Switch
+                      checked={form.ip_profile_refresh_on_egress_change}
+                      onChange={(event) => setFormField("ip_profile_refresh_on_egress_change", event.target.checked)}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-grid" style={{ marginTop: "16px" }}>
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-ip-provider" style={{ margin: 0 }}>
+                        {t("在线画像提供方")}
+                      </label>
+                      {renderRestoreButton("ip_profile_online_provider")}
+                    </div>
+                    <Select
+                      id="sys-ip-provider"
+                      value={form.ip_profile_online_provider}
+                      onChange={(event) => setFormField("ip_profile_online_provider", event.target.value)}
+                    >
+                      {PROFILE_PROVIDER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {t(option.label)}
+                        </option>
+                      ))}
+                    </Select>
+                    <p className="muted" style={{ marginTop: "6px" }}>
+                      {t("推荐使用 ProxyCheck 免费方案。禁用在线补充时，只会使用本地预判和历史缓存。")}
+                    </p>
+                  </div>
+
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-ip-api-key" style={{ margin: 0 }}>
+                        {t("在线画像密钥")}
+                      </label>
+                      {renderRestoreButton("ip_profile_online_api_key")}
+                    </div>
+                    <Input
+                      id="sys-ip-api-key"
+                      type="password"
+                      value={form.ip_profile_online_api_key}
+                      onChange={(event) => setFormField("ip_profile_online_api_key", event.target.value)}
+                    />
+                    <p className="muted" style={{ marginTop: "6px" }}>
+                      {t("仅管理员可见。若使用免费 ProxyCheck，请填它的免费 API key。")}
+                    </p>
+                  </div>
+
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-ip-rpm" style={{ margin: 0 }}>
+                        {t("在线查询速率上限")}
+                      </label>
+                      {renderRestoreButton("ip_profile_online_requests_per_minute")}
+                    </div>
+                    <Input
+                      id="sys-ip-rpm"
+                      type="number"
+                      min={1}
+                      value={form.ip_profile_online_requests_per_minute}
+                      onChange={(event) => setFormField("ip_profile_online_requests_per_minute", event.target.value)}
+                    />
+                    <p className="muted" style={{ marginTop: "6px" }}>
+                      {t("单位是每分钟最大请求数。只对未知类型节点生效，配合持久化缓存可减少重复查询。")}
+                    </p>
+                  </div>
+
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-ip-cache-ttl" style={{ margin: 0 }}>
+                        {t("画像缓存保留时长")}
+                      </label>
+                      {renderRestoreButton("ip_profile_cache_ttl")}
+                    </div>
+                    <Input
+                      id="sys-ip-cache-ttl"
+                      value={form.ip_profile_cache_ttl}
+                      onChange={(event) => setFormField("ip_profile_cache_ttl", event.target.value)}
+                    />
+                    <p className="muted" style={{ marginTop: "6px" }}>
+                      {t("例如 720h。相同出口 IP 在缓存有效期内不会重复触发在线查询。")}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="callout callout-warn" style={{ marginTop: "16px" }}>
+                  <Sparkles size={14} />
+                  <span>{t("如果你刚改了在线 provider 或 API key，可以点下面按钮，对当前已知出口 IP 批量重新补画像。")}</span>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void queueKnownNodesMutation.mutateAsync()}
+                    disabled={queueKnownNodesMutation.isPending}
+                  >
+                    <RefreshCw size={16} className={queueKnownNodesMutation.isPending ? "spin" : undefined} />
+                    {queueKnownNodesMutation.isPending ? t("提交中...") : t("重检当前已知出口 IP")}
+                  </Button>
                 </div>
               </section>
 

@@ -166,4 +166,9 @@ func (l *requestLifecycle) setRouteResult(result routing.RouteResult) {
 	} else {
 		l.log.PreviousEgressIP = ""
 	}
+	l.log.EgressNetworkType = result.EgressNetworkType
+	l.log.EgressASN = result.EgressASN
+	l.log.EgressASNName = result.EgressASNName
+	l.log.QualityScore = result.QualityScore
+	l.log.QualityGrade = result.QualityGrade
 }

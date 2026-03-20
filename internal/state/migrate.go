@@ -19,13 +19,15 @@ const (
 	// Keep these version markers in sync with SQL files under migrations/state/.
 	// stateLegacyBaselineVersion must remain fixed to the highest migration
 	// version covered by compatibility detection for pre-migrate databases.
-	stateVersionBaseSchema              = 1
-	stateVersionAddEmptyAccountBehavior = 2
-	stateVersionAddFixedAccountHeader   = 3
-	stateVersionNormalizeMissAction     = 4
-	stateVersionAddProxyAccessMode      = 5
-	stateVersionAddRotationPolicy       = 6
-	stateLegacyBaselineVersion          = stateVersionAddFixedAccountHeader
+	stateVersionBaseSchema                 = 1
+	stateVersionAddEmptyAccountBehavior    = 2
+	stateVersionAddFixedAccountHeader      = 3
+	stateVersionNormalizeMissAction        = 4
+	stateVersionAddProxyAccessMode         = 5
+	stateVersionAddRotationPolicy          = 6
+	stateVersionAddAdvancedPlatformFilters = 7
+	stateVersionAddSubscriptionSources     = 8
+	stateLegacyBaselineVersion             = stateVersionAddFixedAccountHeader
 )
 
 //go:embed migrations/state/*.sql migrations/cache/*.sql
@@ -118,8 +120,24 @@ func prepareLegacyStateBaseline(db *sql.DB, driver migratedb.Driver) error {
 	if err != nil {
 		return err
 	}
+	hasSubscriptionFilters, err := hasTableColumn(db, "platforms", "subscription_filters_json")
+	if err != nil {
+		return err
+	}
+	hasSubscriptionsTable, err := hasTable(db, "subscriptions")
+	if err != nil {
+		return err
+	}
+	hasSubscriptionSources, err := hasTableColumn(db, "subscriptions", "sources_json")
+	if err != nil {
+		return err
+	}
 
 	switch {
+	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval && hasSubscriptionFilters && hasSubscriptionsTable && hasSubscriptionSources:
+		return setMigrationVersion(driver, stateVersionAddSubscriptionSources)
+	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval && hasSubscriptionFilters:
+		return setMigrationVersion(driver, stateVersionAddAdvancedPlatformFilters)
 	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode && hasRotationPolicy && hasRotationInterval:
 		return setMigrationVersion(driver, stateVersionAddRotationPolicy)
 	case hasEmptyBehavior && hasFixedHeader && hasProxyAccessMode:

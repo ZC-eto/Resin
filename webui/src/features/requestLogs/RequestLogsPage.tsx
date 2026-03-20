@@ -31,9 +31,11 @@ type FilterDraft = {
   account: string;
   target_host: string;
   egress_ip: string;
+  egress_network_type: string;
   proxy_type: ProxyTypeFilter;
   net_ok: BoolFilter;
   http_status: string;
+  min_quality_score: string;
   limit: number;
 };
 
@@ -44,9 +46,11 @@ const defaultFilters: FilterDraft = {
   account: "",
   target_host: "",
   egress_ip: "",
+  egress_network_type: "",
   proxy_type: "all",
   net_ok: "all",
   http_status: "",
+  min_quality_score: "",
   limit: 100,
 };
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000] as const;
@@ -266,9 +270,11 @@ function buildActiveFilters(draft: FilterDraft): Omit<RequestLogListFilters, "cu
     account: draft.account,
     target_host: draft.target_host,
     egress_ip: draft.egress_ip,
+    egress_network_type: draft.egress_network_type,
     proxy_type: draft.proxy_type === "all" ? undefined : Number(draft.proxy_type),
     net_ok: boolFromFilter(draft.net_ok),
     http_status: hasValidStatus ? status : undefined,
+    min_quality_score: draft.min_quality_score.trim() ? Number(draft.min_quality_score) : undefined,
     limit: draft.limit,
     fuzzy: true,
   };
@@ -338,6 +344,20 @@ function dateLocale(): string {
   return isEnglishLocale(getCurrentLocale()) ? "en-US" : "zh-CN";
 }
 
+function networkTypeLabel(value: string, t: (text: string, options?: Record<string, unknown>) => string): string {
+  switch (value) {
+    case "RESIDENTIAL":
+      return t("家宽 / 住宅");
+    case "DATACENTER":
+      return t("机房");
+    case "MOBILE":
+      return t("移动");
+    case "UNKNOWN":
+      return t("未知");
+    default:
+      return value || "-";
+  }
+}
 
 function splitDateTime(input: string): { date: string; time: string } {
   if (!input) {
@@ -477,6 +497,8 @@ export function RequestLogsPage() {
     setSelectedLogId(logId);
     setDrawerOpen(true);
     setPayloadTab("request");
+    setPayloadData({ headers: "", body: "" });
+    setPayloadDecodePending(false);
   };
 
   const moveNext = () => {
@@ -516,17 +538,15 @@ export function RequestLogsPage() {
     const payload = payloadQuery.data;
 
     if (!payload) {
-      setPayloadData({ headers: "", body: "" });
-      setPayloadDecodePending(false);
       return () => {
         cancelled = true;
       };
     }
 
-    setPayloadData({ headers: "", body: "" });
-    setPayloadDecodePending(true);
-
     const decodePayload = async () => {
+      setPayloadData({ headers: "", body: "" });
+      setPayloadDecodePending(true);
+
       const [headersBase64, bodyBase64] =
         payloadTab === "request"
           ? [payload.req_headers_b64, payload.req_body_b64]
@@ -701,6 +721,7 @@ export function RequestLogsPage() {
                 <span>-</span>
               )}
               <small title={log.egress_ip}>{log.egress_ip || "-"}</small>
+              <small>{`${networkTypeLabel(log.egress_network_type, t)} / ${log.quality_grade || "-"}`}</small>
             </div>
           );
         },
@@ -832,6 +853,24 @@ export function RequestLogsPage() {
               </div>
 
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                <label htmlFor="logs-egress-network-type" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                  {t("网络类型")}
+                </label>
+                <Select
+                  id="logs-egress-network-type"
+                  value={filters.egress_network_type}
+                  onChange={(event) => updateFilter("egress_network_type", event.target.value)}
+                  style={{ width: "100%", padding: "4px 8px", fontSize: "0.875rem", minHeight: "32px", height: "32px" }}
+                >
+                  <option value="">{t("全部")}</option>
+                  <option value="RESIDENTIAL">{t("家宽 / 住宅")}</option>
+                  <option value="DATACENTER">{t("机房")}</option>
+                  <option value="MOBILE">{t("移动")}</option>
+                  <option value="UNKNOWN">{t("未知")}</option>
+                </Select>
+              </div>
+
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                 <label htmlFor="logs-net-ok" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                   {t("网络状态")}
                 </label>
@@ -856,6 +895,19 @@ export function RequestLogsPage() {
                   placeholder="100-599"
                   value={filters.http_status}
                   onChange={(event) => updateFilter("http_status", event.target.value)}
+                  style={{ width: "100%", padding: "4px 8px", fontSize: "0.875rem", minHeight: "32px", height: "32px" }}
+                />
+              </div>
+
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                <label htmlFor="logs-min-quality-score" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                  {t("最低质量分")}
+                </label>
+                <Input
+                  id="logs-min-quality-score"
+                  placeholder="0-100"
+                  value={filters.min_quality_score}
+                  onChange={(event) => updateFilter("min_quality_score", event.target.value)}
                   style={{ width: "100%", padding: "4px 8px", fontSize: "0.875rem", minHeight: "32px", height: "32px" }}
                 />
               </div>
@@ -1021,6 +1073,24 @@ export function RequestLogsPage() {
                     <p>{detailLog.previous_egress_ip || "-"}</p>
                   </div>
                   <div>
+                    <span>{t("网络类型")}</span>
+                    <p>{networkTypeLabel(detailLog.egress_network_type, t)}</p>
+                  </div>
+                  <div>
+                    <span>ASN</span>
+                    <p>{detailLog.egress_asn ? `AS${detailLog.egress_asn}` : "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("ASN 名称")}</span>
+                    <p>{detailLog.egress_asn_name || "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("质量 / 等级")}</span>
+                    <p>
+                      {detailLog.quality_score} / {detailLog.quality_grade || "-"}
+                    </p>
+                  </div>
+                  <div>
                     <span>{t("客户端 IP")}</span>
                     <p>{detailLog.client_ip || "-"}</p>
                   </div>
@@ -1113,6 +1183,11 @@ export function RequestLogsPage() {
                     <span>{t("节点")}</span>
                     <p>{detailLog.node_tag || "-"}</p>
                     <code style={{ display: 'block', marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all' }}>{detailLog.node_hash || "-"}</code>
+                  </div>
+                  <div>
+                    <span>{t("节点画像快照")}</span>
+                    <p>{`${networkTypeLabel(detailLog.egress_network_type, t)} / ${detailLog.quality_grade || "-"}`}</p>
+                    <code style={{ display: 'block', marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all' }}>{detailLog.egress_asn_name || "-"}</code>
                   </div>
                 </div>
               </section>

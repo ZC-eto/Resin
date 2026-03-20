@@ -12,6 +12,13 @@ export type RuntimeConfig = {
   max_egress_test_interval: string;
   latency_test_url: string;
   latency_authorities: string[];
+  ip_profile_local_lookup_enabled: boolean;
+  ip_profile_online_provider: string;
+  ip_profile_online_api_key: string;
+  ip_profile_online_requests_per_minute: number;
+  ip_profile_cache_ttl: string;
+  ip_profile_background_enabled: boolean;
+  ip_profile_refresh_on_egress_change: boolean;
   p2c_latency_window: string;
   latency_decay_window: string;
   cache_flush_interval: string;
@@ -61,3 +68,34 @@ export type EnvConfig = {
 };
 
 export type RuntimeConfigPatch = Partial<RuntimeConfig>;
+
+export type ProbeRuntimeStatus = {
+  in_flight_egress: number;
+  in_flight_latency: number;
+  due_egress_nodes: number;
+  due_latency_nodes: number;
+  unknown_egress_nodes: number;
+  last_egress_scan_at_ns: number;
+  last_latency_scan_at_ns: number;
+};
+
+export type IPProfileRuntimeStatus = {
+  background_enabled: boolean;
+  queue_total: number;
+  queue_healthy: number;
+  queue_unhealthy: number;
+  queue_manual: number;
+  running_total: number;
+  running_healthy: number;
+  pending_known_nodes: number;
+  pending_healthy_nodes: number;
+  pending_unhealthy_nodes: number;
+  last_started_at_ns: number;
+  last_finished_at_ns: number;
+  last_error?: string;
+};
+
+export type SystemTaskStatus = {
+  probe: ProbeRuntimeStatus;
+  ip_profile: IPProfileRuntimeStatus;
+};

@@ -2,11 +2,15 @@ package topology
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/scanloop"
@@ -14,6 +18,11 @@ import (
 )
 
 const schedulerLookahead = 15 * time.Second
+
+type sourceFailure struct {
+	label string
+	err   error
+}
 
 // SubscriptionScheduler manages periodic subscription updates.
 type SubscriptionScheduler struct {
@@ -28,32 +37,36 @@ type SubscriptionScheduler struct {
 	Fetcher func(url string) ([]byte, error)
 
 	// For persistence.
-	onSubUpdated func(sub *subscription.Subscription)
+	onSubUpdated          func(sub *subscription.Subscription)
+	onSubRefreshSucceeded func(sub *subscription.Subscription)
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	attemptSeq atomic.Int64
+	stopCh     chan struct{}
+	wg         sync.WaitGroup
 }
 
 // SchedulerConfig configures the SubscriptionScheduler.
 type SchedulerConfig struct {
-	SubManager   *SubscriptionManager
-	Pool         *GlobalNodePool
-	Downloader   netutil.Downloader               // shared downloader
-	Fetcher      func(url string) ([]byte, error) // optional, defaults to Downloader.Download
-	OnSubUpdated func(sub *subscription.Subscription)
+	SubManager            *SubscriptionManager
+	Pool                  *GlobalNodePool
+	Downloader            netutil.Downloader               // shared downloader
+	Fetcher               func(url string) ([]byte, error) // optional, defaults to Downloader.Download
+	OnSubUpdated          func(sub *subscription.Subscription)
+	OnSubRefreshSucceeded func(sub *subscription.Subscription)
 }
 
 // NewSubscriptionScheduler creates a new scheduler.
 func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 	downloadCtx, cancelDownload := context.WithCancel(context.Background())
 	sched := &SubscriptionScheduler{
-		subManager:     cfg.SubManager,
-		pool:           cfg.Pool,
-		downloader:     cfg.Downloader,
-		downloadCtx:    downloadCtx,
-		cancelDownload: cancelDownload,
-		onSubUpdated:   cfg.OnSubUpdated,
-		stopCh:         make(chan struct{}),
+		subManager:            cfg.SubManager,
+		pool:                  cfg.Pool,
+		downloader:            cfg.Downloader,
+		downloadCtx:           downloadCtx,
+		cancelDownload:        cancelDownload,
+		onSubUpdated:          cfg.OnSubUpdated,
+		onSubRefreshSucceeded: cfg.OnSubRefreshSucceeded,
+		stopCh:                make(chan struct{}),
 	}
 	if cfg.Fetcher != nil {
 		sched.Fetcher = cfg.Fetcher
@@ -186,30 +199,13 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 // (no I/O under lock) while still preventing concurrent diff/apply races.
 func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscription) {
 	attemptStartedNs := time.Now().UnixNano()
-	attemptURL := sub.URL()
-	attemptSourceType := sub.SourceType()
-	attemptContent := sub.Content()
+	attemptSeq := s.attemptSeq.Add(1)
+	attemptSources := sub.Sources()
 	attemptConfigVersion := sub.ConfigVersion()
 
-	// 1. Fetch/read content (lock-free).
-	var (
-		body []byte
-		err  error
-	)
-	if attemptSourceType == subscription.SourceTypeLocal {
-		body = []byte(attemptContent)
-	} else {
-		body, err = s.Fetcher(attemptURL)
-		if err != nil {
-			s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "fetch", err)
-			return
-		}
-	}
-
-	// 2. Parse (lock-free).
-	parsed, err := subscription.ParseGeneralSubscription(body)
+	parsed, err := s.parseSubscriptionSources(attemptSources)
 	if err != nil {
-		s.handleUpdateFailure(sub, attemptStartedNs, attemptConfigVersion, "parse", err)
+		s.handleUpdateFailure(sub, attemptStartedNs, attemptSeq, attemptConfigVersion, "sources", err)
 		return
 	}
 
@@ -235,7 +231,7 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		}
 		// Stale success guard: if a newer successful update has already landed,
 		// discard this older attempt to avoid rolling state backward.
-		if sub.LastUpdatedNs.Load() > attemptStartedNs {
+		if sub.LastRefreshApplySeq.Load() > attemptSeq {
 			return
 		}
 
@@ -275,8 +271,12 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 		// 5. Update timestamps (inside lock, using current time).
 		now := time.Now().UnixNano()
+		if now <= attemptStartedNs {
+			now = attemptStartedNs + 1
+		}
 		sub.LastCheckedNs.Store(now)
 		sub.LastUpdatedNs.Store(now)
+		sub.LastRefreshApplySeq.Store(attemptSeq)
 		sub.SetLastError("")
 		applied = true
 	})
@@ -288,6 +288,75 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	if s.onSubUpdated != nil {
 		s.onSubUpdated(sub)
 	}
+	if s.onSubRefreshSucceeded != nil {
+		s.onSubRefreshSucceeded(sub)
+	}
+}
+
+func (s *SubscriptionScheduler) parseSubscriptionSources(sources []model.SubscriptionSource) ([]subscription.ParsedNode, error) {
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("subscription has no configured sources")
+	}
+
+	failures := make([]sourceFailure, 0)
+	parsedAll := make([]subscription.ParsedNode, 0, 64)
+	enabledCount := 0
+
+	for index, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		enabledCount++
+
+		var (
+			body []byte
+			err  error
+		)
+		if source.Type == subscription.SourceTypeLocal {
+			body = []byte(source.Content)
+		} else {
+			body, err = s.Fetcher(source.URL)
+		}
+		if err == nil {
+			var parsed []subscription.ParsedNode
+			parsed, err = subscription.ParseGeneralSubscription(body)
+			if err == nil {
+				parsedAll = append(parsedAll, parsed...)
+				continue
+			}
+		}
+
+		label := source.Label
+		if label == "" {
+			label = source.ID
+		}
+		if label == "" {
+			label = fmt.Sprintf("source-%d", index+1)
+		}
+		failures = append(failures, sourceFailure{label: label, err: err})
+	}
+
+	if enabledCount == 0 {
+		return nil, fmt.Errorf("subscription has no enabled sources")
+	}
+	if len(parsedAll) > 0 {
+		if len(failures) > 0 {
+			log.Printf("[scheduler] subscription sources partially failed: %s", summarizeSourceFailures(failures))
+		}
+		return parsedAll, nil
+	}
+	return nil, fmt.Errorf("%s", summarizeSourceFailures(failures))
+}
+
+func summarizeSourceFailures(failures []sourceFailure) string {
+	if len(failures) == 0 {
+		return "subscription refresh failed"
+	}
+	parts := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		parts = append(parts, fmt.Sprintf("%s: %v", failure.label, failure.err))
+	}
+	return "all sources failed: " + strings.Join(parts, "; ")
 }
 
 // handleUpdateFailure applies a fetch/parse failure to subscription state.
@@ -296,6 +365,7 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 func (s *SubscriptionScheduler) handleUpdateFailure(
 	sub *subscription.Subscription,
 	attemptStartedNs int64,
+	attemptSeq int64,
 	attemptConfigVersion int64,
 	stage string,
 	err error,
@@ -306,11 +376,15 @@ func (s *SubscriptionScheduler) handleUpdateFailure(
 		if sub.ConfigVersion() != attemptConfigVersion {
 			return
 		}
-		if sub.LastUpdatedNs.Load() > attemptStartedNs {
+		if sub.LastRefreshApplySeq.Load() > attemptSeq {
 			return
 		}
 		now := time.Now().UnixNano()
+		if now <= attemptStartedNs {
+			now = attemptStartedNs + 1
+		}
 		sub.LastCheckedNs.Store(now)
+		sub.LastRefreshApplySeq.Store(attemptSeq)
 		sub.SetLastError(err.Error())
 		applied = true
 	})
@@ -360,4 +434,11 @@ func (s *SubscriptionScheduler) RenameSubscription(sub *subscription.Subscriptio
 
 func (s *SubscriptionScheduler) fetchViaDownloader(url string) ([]byte, error) {
 	return s.downloader.Download(s.downloadCtx, url)
+}
+
+func (s *SubscriptionScheduler) SetOnSubRefreshSucceeded(fn func(sub *subscription.Subscription)) {
+	if s == nil {
+		return
+	}
+	s.onSubRefreshSucceeded = fn
 }

@@ -50,6 +50,46 @@ func decodeStringSliceJSON(raw string) ([]string, error) {
 	return out, nil
 }
 
+func encodeSubscriptionSourcesJSON(values []model.SubscriptionSource) (string, error) {
+	if values == nil {
+		values = []model.SubscriptionSource{}
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func decodeSubscriptionSourcesJSON(raw string) ([]model.SubscriptionSource, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []model.SubscriptionSource{}, nil
+	}
+	var out []model.SubscriptionSource
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []model.SubscriptionSource{}
+	}
+	return out, nil
+}
+
+func nullableIntArg(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableIntFromNullInt64(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	converted := int(value.Int64)
+	return &converted
+}
+
 // --- system_config ---
 
 // GetSystemConfig loads the runtime config and version from state.db.
@@ -109,6 +149,9 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if err := platform.ValidateRegionFilters(p.RegionFilters); err != nil {
 		return err
 	}
+	if err := platform.ValidateNetworkTypeFilters(p.NetworkTypeFilters); err != nil {
+		return err
+	}
 	missAction := platform.NormalizeReverseProxyMissAction(p.ReverseProxyMissAction)
 	if missAction == "" {
 		return fmt.Errorf("reverse_proxy_miss_action: invalid value %q", p.ReverseProxyMissAction)
@@ -164,21 +207,37 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if err != nil {
 		return fmt.Errorf("encode platform %s region_filters: %w", p.ID, err)
 	}
+	subscriptionFiltersJSON, err := encodeStringSliceJSON(p.SubscriptionFilters)
+	if err != nil {
+		return fmt.Errorf("encode platform %s subscription_filters: %w", p.ID, err)
+	}
+	networkTypeFiltersJSON, err := encodeStringSliceJSON(p.NetworkTypeFilters)
+	if err != nil {
+		return fmt.Errorf("encode platform %s network_type_filters: %w", p.ID, err)
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	_, err = r.db.Exec(`
 		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
+		                       subscription_filters_json, network_type_filters_json,
+		                       min_quality_score, max_reference_latency_ms, min_egress_stability_score, max_circuit_open_count,
 		                       reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 		                       reverse_proxy_fixed_account_header, allocation_policy, proxy_access_mode,
 		                       rotation_policy, rotation_interval_ns, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name                     = excluded.name,
 			sticky_ttl_ns            = excluded.sticky_ttl_ns,
 			regex_filters_json       = excluded.regex_filters_json,
 			region_filters_json      = excluded.region_filters_json,
+			subscription_filters_json = excluded.subscription_filters_json,
+			network_type_filters_json = excluded.network_type_filters_json,
+			min_quality_score         = excluded.min_quality_score,
+			max_reference_latency_ms  = excluded.max_reference_latency_ms,
+			min_egress_stability_score = excluded.min_egress_stability_score,
+			max_circuit_open_count    = excluded.max_circuit_open_count,
 			reverse_proxy_miss_action = excluded.reverse_proxy_miss_action,
 			reverse_proxy_empty_account_behavior = excluded.reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header   = excluded.reverse_proxy_fixed_account_header,
@@ -188,6 +247,9 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 			rotation_interval_ns     = excluded.rotation_interval_ns,
 			updated_at_ns            = excluded.updated_at_ns
 		`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON,
+		subscriptionFiltersJSON, networkTypeFiltersJSON,
+		nullableIntArg(p.MinQualityScore), nullableIntArg(p.MaxReferenceLatencyMs),
+		nullableIntArg(p.MinEgressStabilityScore), nullableIntArg(p.MaxCircuitOpenCount),
 		p.ReverseProxyMissAction, p.ReverseProxyEmptyAccountBehavior, p.ReverseProxyFixedAccountHeader,
 		p.AllocationPolicy, p.ProxyAccessMode, p.RotationPolicy, p.RotationIntervalNs, p.UpdatedAtNs)
 	if err != nil {
@@ -243,15 +305,20 @@ func (r *StateRepo) GetPlatformName(id string) (string, error) {
 // GetPlatform returns one platform by ID.
 func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
+			subscription_filters_json, network_type_filters_json,
+			min_quality_score, max_reference_latency_ms, min_egress_stability_score, max_circuit_open_count,
 			reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header, allocation_policy, proxy_access_mode,
 			rotation_policy, rotation_interval_ns, updated_at_ns
 			FROM platforms WHERE id = ?`, id)
 
 	var p model.Platform
-	var regexFiltersJSON, regionFiltersJSON string
+	var regexFiltersJSON, regionFiltersJSON, subscriptionFiltersJSON, networkTypeFiltersJSON string
+	var minQualityScore, maxReferenceLatencyMs, minEgressStabilityScore, maxCircuitOpenCount sql.NullInt64
 	if err := row.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-		&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+		&regionFiltersJSON, &subscriptionFiltersJSON, &networkTypeFiltersJSON,
+		&minQualityScore, &maxReferenceLatencyMs, &minEgressStabilityScore, &maxCircuitOpenCount,
+		&p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 		&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.ProxyAccessMode,
 		&p.RotationPolicy, &p.RotationIntervalNs, &p.UpdatedAtNs); err != nil {
 		if err == sql.ErrNoRows {
@@ -267,14 +334,28 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode platform %s region_filters_json: %w", p.ID, err)
 	}
+	subscriptionFilters, err := decodeStringSliceJSON(subscriptionFiltersJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s subscription_filters_json: %w", p.ID, err)
+	}
+	networkTypeFilters, err := decodeStringSliceJSON(networkTypeFiltersJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s network_type_filters_json: %w", p.ID, err)
+	}
 	p.RegexFilters = regexFilters
 	p.RegionFilters = regionFilters
+	p.SubscriptionFilters = subscriptionFilters
+	p.NetworkTypeFilters = networkTypeFilters
+	p.MinQualityScore = nullableIntFromNullInt64(minQualityScore)
+	p.MaxReferenceLatencyMs = nullableIntFromNullInt64(maxReferenceLatencyMs)
+	p.MinEgressStabilityScore = nullableIntFromNullInt64(minEgressStabilityScore)
+	p.MaxCircuitOpenCount = nullableIntFromNullInt64(maxCircuitOpenCount)
 	return &p, nil
 }
 
 // ListPlatforms returns all platforms.
 func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
-	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, proxy_access_mode, rotation_policy, rotation_interval_ns, updated_at_ns FROM platforms")
+	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, subscription_filters_json, network_type_filters_json, min_quality_score, max_reference_latency_ms, min_egress_stability_score, max_circuit_open_count, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, proxy_access_mode, rotation_policy, rotation_interval_ns, updated_at_ns FROM platforms")
 	if err != nil {
 		return nil, err
 	}
@@ -283,9 +364,12 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 	var result []model.Platform
 	for rows.Next() {
 		var p model.Platform
-		var regexFiltersJSON, regionFiltersJSON string
+		var regexFiltersJSON, regionFiltersJSON, subscriptionFiltersJSON, networkTypeFiltersJSON string
+		var minQualityScore, maxReferenceLatencyMs, minEgressStabilityScore, maxCircuitOpenCount sql.NullInt64
 		if err := rows.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-			&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+			&regionFiltersJSON, &subscriptionFiltersJSON, &networkTypeFiltersJSON,
+			&minQualityScore, &maxReferenceLatencyMs, &minEgressStabilityScore, &maxCircuitOpenCount,
+			&p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 			&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.ProxyAccessMode,
 			&p.RotationPolicy, &p.RotationIntervalNs, &p.UpdatedAtNs); err != nil {
 			return nil, err
@@ -298,8 +382,22 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode platform %s region_filters_json: %w", p.ID, err)
 		}
+		subscriptionFilters, err := decodeStringSliceJSON(subscriptionFiltersJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode platform %s subscription_filters_json: %w", p.ID, err)
+		}
+		networkTypeFilters, err := decodeStringSliceJSON(networkTypeFiltersJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode platform %s network_type_filters_json: %w", p.ID, err)
+		}
 		p.RegexFilters = regexFilters
 		p.RegionFilters = regionFilters
+		p.SubscriptionFilters = subscriptionFilters
+		p.NetworkTypeFilters = networkTypeFilters
+		p.MinQualityScore = nullableIntFromNullInt64(minQualityScore)
+		p.MaxReferenceLatencyMs = nullableIntFromNullInt64(maxReferenceLatencyMs)
+		p.MinEgressStabilityScore = nullableIntFromNullInt64(minEgressStabilityScore)
+		p.MaxCircuitOpenCount = nullableIntFromNullInt64(maxCircuitOpenCount)
 		result = append(result, p)
 	}
 	return result, rows.Err()
@@ -321,25 +419,39 @@ func (r *StateRepo) UpsertSubscription(s model.Subscription) error {
 	if s.SourceType != "remote" && s.SourceType != "local" {
 		return fmt.Errorf("source_type: must be remote or local, got %q", s.SourceType)
 	}
+	if len(s.Sources) == 0 {
+		s.Sources = []model.SubscriptionSource{{
+			ID:      "source-1",
+			Type:    s.SourceType,
+			URL:     s.URL,
+			Content: s.Content,
+			Enabled: true,
+		}}
+	}
+	sourcesJSON, err := encodeSubscriptionSourcesJSON(s.Sources)
+	if err != nil {
+		return fmt.Errorf("encode subscription %s sources: %w", s.ID, err)
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	_, err := r.db.Exec(`
-		INSERT INTO subscriptions (id, name, source_type, url, content, update_interval_ns, enabled,
+	_, err = r.db.Exec(`
+		INSERT INTO subscriptions (id, name, source_type, url, content, sources_json, update_interval_ns, enabled,
 		                           ephemeral, ephemeral_node_evict_delay_ns, created_at_ns, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name               = excluded.name,
 			source_type        = excluded.source_type,
 			url                = excluded.url,
 			content            = excluded.content,
+			sources_json       = excluded.sources_json,
 			update_interval_ns = excluded.update_interval_ns,
 			enabled            = excluded.enabled,
 			ephemeral          = excluded.ephemeral,
 			ephemeral_node_evict_delay_ns = excluded.ephemeral_node_evict_delay_ns,
 			updated_at_ns      = excluded.updated_at_ns
-	`, s.ID, s.Name, s.SourceType, s.URL, s.Content, s.UpdateIntervalNs, s.Enabled,
+	`, s.ID, s.Name, s.SourceType, s.URL, s.Content, sourcesJSON, s.UpdateIntervalNs, s.Enabled,
 		s.Ephemeral, s.EphemeralNodeEvictDelayNs, s.CreatedAtNs, s.UpdatedAtNs)
 	return err
 }
@@ -362,7 +474,7 @@ func (r *StateRepo) DeleteSubscription(id string) error {
 
 // ListSubscriptions returns all subscriptions.
 func (r *StateRepo) ListSubscriptions() ([]model.Subscription, error) {
-	rows, err := r.db.Query(`SELECT id, name, source_type, url, content, update_interval_ns, enabled,
+	rows, err := r.db.Query(`SELECT id, name, source_type, url, content, sources_json, update_interval_ns, enabled,
 		ephemeral, ephemeral_node_evict_delay_ns, created_at_ns, updated_at_ns FROM subscriptions`)
 	if err != nil {
 		return nil, err
@@ -372,12 +484,26 @@ func (r *StateRepo) ListSubscriptions() ([]model.Subscription, error) {
 	var result []model.Subscription
 	for rows.Next() {
 		var s model.Subscription
-		if err := rows.Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.Content, &s.UpdateIntervalNs, &s.Enabled,
+		var sourcesJSON string
+		if err := rows.Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.Content, &sourcesJSON, &s.UpdateIntervalNs, &s.Enabled,
 			&s.Ephemeral, &s.EphemeralNodeEvictDelayNs, &s.CreatedAtNs, &s.UpdatedAtNs); err != nil {
 			return nil, err
 		}
 		if s.SourceType == "" {
 			s.SourceType = "remote"
+		}
+		s.Sources, err = decodeSubscriptionSourcesJSON(sourcesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode subscription %s sources_json: %w", s.ID, err)
+		}
+		if len(s.Sources) == 0 {
+			s.Sources = []model.SubscriptionSource{{
+				ID:      "source-1",
+				Type:    s.SourceType,
+				URL:     s.URL,
+				Content: s.Content,
+				Enabled: true,
+			}}
 		}
 		result = append(result, s)
 	}

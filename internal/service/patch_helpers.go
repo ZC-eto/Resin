@@ -112,6 +112,34 @@ func (p mergePatch) optionalDurationString(field string) (time.Duration, bool, *
 	return d, true, nil
 }
 
+func (p mergePatch) optionalArray(field string) ([]any, bool, *ServiceError) {
+	raw, ok := p[field]
+	if !ok {
+		return nil, false, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, true, invalidArg(fmt.Sprintf("%s: must be an array", field))
+	}
+	return arr, true, nil
+}
+
+func (p mergePatch) optionalInt(field string) (int, bool, *ServiceError) {
+	raw, ok := p[field]
+	if !ok {
+		return 0, false, nil
+	}
+	switch value := raw.(type) {
+	case float64:
+		if value != float64(int(value)) {
+			return 0, true, invalidArg(fmt.Sprintf("%s: must be an integer", field))
+		}
+		return int(value), true, nil
+	default:
+		return 0, true, invalidArg(fmt.Sprintf("%s: must be an integer", field))
+	}
+}
+
 func parseHTTPAbsoluteURL(field, value string) (*url.URL, *ServiceError) {
 	u, err := url.ParseRequestURI(value)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {

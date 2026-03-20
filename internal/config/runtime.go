@@ -2,6 +2,23 @@ package config
 
 import "time"
 
+type IPProfileOnlineProvider string
+
+const (
+	IPProfileOnlineProviderDisabled   IPProfileOnlineProvider = "DISABLED"
+	IPProfileOnlineProviderProxycheck IPProfileOnlineProvider = "PROXYCHECK"
+	IPProfileOnlineProviderIPInfo     IPProfileOnlineProvider = "IPINFO"
+)
+
+func NormalizeIPProfileOnlineProvider(raw string) IPProfileOnlineProvider {
+	switch IPProfileOnlineProvider(raw) {
+	case IPProfileOnlineProviderProxycheck, IPProfileOnlineProviderIPInfo:
+		return IPProfileOnlineProvider(raw)
+	default:
+		return IPProfileOnlineProviderDisabled
+	}
+}
+
 // RuntimeConfig holds all hot-updatable global settings.
 // These are persisted in the database and served via GET /system/config.
 type RuntimeConfig struct {
@@ -23,8 +40,15 @@ type RuntimeConfig struct {
 	MaxEgressTestInterval           Duration `json:"max_egress_test_interval"`
 
 	// Probe
-	LatencyTestURL     string   `json:"latency_test_url"`
-	LatencyAuthorities []string `json:"latency_authorities"`
+	LatencyTestURL                   string   `json:"latency_test_url"`
+	LatencyAuthorities               []string `json:"latency_authorities"`
+	IPProfileLocalLookupEnabled      bool     `json:"ip_profile_local_lookup_enabled"`
+	IPProfileOnlineProvider          string   `json:"ip_profile_online_provider"`
+	IPProfileOnlineAPIKey            string   `json:"ip_profile_online_api_key"`
+	IPProfileOnlineRequestsPerMinute int      `json:"ip_profile_online_requests_per_minute"`
+	IPProfileCacheTTL                Duration `json:"ip_profile_cache_ttl"`
+	IPProfileBackgroundEnabled       bool     `json:"ip_profile_background_enabled"`
+	IPProfileRefreshOnEgressChange   bool     `json:"ip_profile_refresh_on_egress_change"`
 
 	// P2C
 	P2CLatencyWindow   Duration `json:"p2c_latency_window"`
@@ -53,8 +77,15 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 		MaxAuthorityLatencyTestInterval: Duration(3 * time.Hour),
 		MaxEgressTestInterval:           Duration(24 * time.Hour),
 
-		LatencyTestURL:     "https://www.gstatic.com/generate_204",
-		LatencyAuthorities: []string{"gstatic.com", "google.com", "cloudflare.com", "github.com"},
+		LatencyTestURL:                   "https://www.gstatic.com/generate_204",
+		LatencyAuthorities:               []string{"gstatic.com", "google.com", "cloudflare.com", "github.com"},
+		IPProfileLocalLookupEnabled:      true,
+		IPProfileOnlineProvider:          string(IPProfileOnlineProviderDisabled),
+		IPProfileOnlineAPIKey:            "",
+		IPProfileOnlineRequestsPerMinute: 120,
+		IPProfileCacheTTL:                Duration(30 * 24 * time.Hour),
+		IPProfileBackgroundEnabled:       true,
+		IPProfileRefreshOnEgressChange:   true,
 
 		P2CLatencyWindow:   Duration(10 * time.Minute),
 		LatencyDecayWindow: Duration(10 * time.Minute),

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { AlertTriangle, Download, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -13,15 +13,15 @@ import { Select } from "../../components/ui/Select";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
+import { ApiError } from "../../lib/api-client";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
-import type { NodeSummary } from "./types";
+import { exportNode, getNode, listNodes, probeEgress, probeLatency, reprofileNode, reprofileNodes } from "./api";
 import { getAllRegions, getRegionName } from "./regions";
-import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
+import type { NodeExportResponse, NodeListFilters, NodeSortBy, NodeSummary, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error";
@@ -31,7 +31,13 @@ type NodeFilterDraft = {
   subscription_id: string;
   tag_keyword: string;
   region: string;
+  network_type: string;
+  profiled: string;
   egress_ip: string;
+  min_quality_score: string;
+  max_reference_latency_ms: string;
+  min_egress_stability_score: string;
+  max_circuit_open_count: string;
   status: NodeStatusFilter;
 };
 
@@ -40,7 +46,13 @@ const defaultFilterDraft: NodeFilterDraft = {
   subscription_id: "",
   tag_keyword: "",
   region: "",
+  network_type: "",
+  profiled: "",
   egress_ip: "",
+  min_quality_score: "",
+  max_reference_latency_ms: "",
+  min_egress_stability_score: "",
+  max_circuit_open_count: "",
   status: "all",
 };
 
@@ -125,7 +137,13 @@ function draftFromQuery(search: string): NodeFilterDraft {
     subscription_id: trimQueryValue(params, "subscription_id"),
     tag_keyword: tagKeyword,
     region: trimQueryValue(params, "region").toUpperCase(),
+    network_type: trimQueryValue(params, "network_type").toUpperCase(),
+    profiled: trimQueryValue(params, "profiled").toLowerCase(),
     egress_ip: trimQueryValue(params, "egress_ip"),
+    min_quality_score: trimQueryValue(params, "min_quality_score"),
+    max_reference_latency_ms: trimQueryValue(params, "max_reference_latency_ms"),
+    min_egress_stability_score: trimQueryValue(params, "min_egress_stability_score"),
+    max_circuit_open_count: trimQueryValue(params, "max_circuit_open_count"),
     status: statusFromQuery(params),
   };
 }
@@ -158,7 +176,13 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
     subscription_id: draft.subscription_id,
     tag_keyword: draft.tag_keyword,
     region: draft.region,
+    network_type: draft.network_type,
+    profiled: draft.profiled === "true" ? true : draft.profiled === "false" ? false : undefined,
     egress_ip: draft.egress_ip,
+    min_quality_score: draft.min_quality_score.trim() ? Number(draft.min_quality_score) : undefined,
+    max_reference_latency_ms: draft.max_reference_latency_ms.trim() ? Number(draft.max_reference_latency_ms) : undefined,
+    min_egress_stability_score: draft.min_egress_stability_score.trim() ? Number(draft.min_egress_stability_score) : undefined,
+    max_circuit_open_count: draft.max_circuit_open_count.trim() ? Number(draft.max_circuit_open_count) : undefined,
     circuit_open,
     has_outbound,
   };
@@ -240,8 +264,70 @@ function regionToFlag(region: string | undefined): string {
   return name ? `${flag} ${code} (${name})` : `${flag} ${code}`;
 }
 
+function networkTypeLabel(value: NodeSummary["egress_network_type"] | string | undefined, t: (text: string, options?: Record<string, unknown>) => string): string {
+  switch (value) {
+    case "RESIDENTIAL":
+      return t("家宽 / 住宅");
+    case "DATACENTER":
+      return t("机房");
+    case "MOBILE":
+      return t("移动");
+    case "UNKNOWN":
+      return t("未知");
+    default:
+      return value || "-";
+  }
+}
+
+function profileStateLabel(value: string | undefined, t: (text: string, options?: Record<string, unknown>) => string): string {
+  switch (value) {
+    case "PROBING_EGRESS":
+      return t("正在探测出口");
+    case "PENDING_EGRESS":
+      return t("待出口探测");
+    case "UNPROBED":
+      return t("未开始探测");
+    case "QUEUED_PROFILE":
+      return t("画像排队中");
+    case "PROFILING":
+      return t("画像检测中");
+    case "PENDING_PROFILE":
+      return t("待画像");
+    case "PROFILED_UNKNOWN":
+      return t("已画像但仍未知");
+    case "PROFILED":
+      return t("已完成画像");
+    case "UNAVAILABLE":
+      return t("节点不可用");
+    default:
+      return value || "-";
+  }
+}
+
+function profileStateBadgeVariant(value: string | undefined): "success" | "warning" | "danger" | "info" | "accent" | "muted" | "neutral" {
+  switch (value) {
+    case "PROBING_EGRESS":
+      return "info";
+    case "PROFILING":
+      return "accent";
+    case "QUEUED_PROFILE":
+    case "PENDING_PROFILE":
+    case "PENDING_EGRESS":
+      return "warning";
+    case "UNPROBED":
+    case "PROFILED_UNKNOWN":
+      return "muted";
+    case "PROFILED":
+      return "success";
+    case "UNAVAILABLE":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
 export function NodesPage() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const location = useLocation();
   const [draftFilters, setDraftFilters] = useState<NodeFilterDraft>(() => draftFromQuery(location.search));
   const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
@@ -252,12 +338,16 @@ export function NodesPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
+  const [selectedNodeHashes, setSelectedNodeHashes] = useState<string[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportResult, setExportResult] = useState<NodeExportResponse | null>(null);
+  const [exportNodeLabel, setExportNodeLabel] = useState("");
   const { toasts, showToast, dismissToast } = useToast();
 
   const queryClient = useQueryClient();
 
-  const allRegions = useMemo(() => getAllRegions(), [locale]);
+  const allRegions = getAllRegions();
 
   const platformsQuery = useQuery({
     queryKey: ["platforms", "all"],
@@ -308,15 +398,13 @@ export function NodesPage() {
     unique_healthy_egress_ips: 0,
   };
   const nodes = nodesPage.items;
+  const currentPageHashes = nodes.map((item) => item.node_hash);
+  const currentPageAllSelected = currentPageHashes.length > 0 && currentPageHashes.every((hash) => selectedNodeHashes.includes(hash));
+  const currentPageSomeSelected = currentPageHashes.some((hash) => selectedNodeHashes.includes(hash));
 
   const totalPages = Math.max(1, Math.ceil(nodesPage.total / pageSize));
 
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeHash) {
-      return null;
-    }
-    return nodes.find((item) => item.node_hash === selectedNodeHash) ?? null;
-  }, [nodes, selectedNodeHash]);
+  const selectedNode = selectedNodeHash ? nodes.find((item) => item.node_hash === selectedNodeHash) ?? null : null;
 
   const selectedHash = selectedNode?.node_hash || "";
 
@@ -329,6 +417,18 @@ export function NodesPage() {
 
   const detailNode = nodeDetailQuery.data ?? selectedNode;
   const drawerVisible = drawerOpen && Boolean(detailNode);
+
+  const copyText = async (value: string, successMessage: string) => {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(value);
+      showToast("success", successMessage);
+    } catch {
+      showToast("error", t("当前浏览器无法直接复制，请手动复制文本。"));
+    }
+  };
 
   useEffect(() => {
     if (!drawerVisible) {
@@ -397,11 +497,85 @@ export function NodesPage() {
     await probeLatencyMutation.mutateAsync(hash);
   };
 
+  const reprofileMutation = useMutation({
+    mutationFn: async (hash: string) => reprofileNode(hash),
+    onSuccess: async (node) => {
+      await refreshNodes();
+      showToast("success", t("已重新检测网络类型：{{type}} / {{ip}}", {
+        type: networkTypeLabel(node.egress_network_type, t),
+        ip: node.egress_ip || "-",
+      }));
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const exportNodeMutation = useMutation({
+    mutationFn: async (node: NodeSummary) => {
+      const result = await exportNode(node.node_hash);
+      return { node, result };
+    },
+    onSuccess: ({ node, result }) => {
+      setExportResult(result);
+      setExportNodeLabel(firstTag(node));
+      setExportModalOpen(true);
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        showToast("error", t("当前节点协议不支持导出为通用 HTTP/SOCKS URI"));
+        return;
+      }
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const batchReprofileMutation = useMutation({
+    mutationFn: async (hashes: string[]) => reprofileNodes(hashes),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      setSelectedNodeHashes([]);
+      showToast(
+        "success",
+        t("批量重检完成：成功 {{accepted}} / {{requested}}", {
+          accepted: result.accepted,
+          requested: result.requested,
+        }),
+      );
+      if (result.failed.length) {
+        showToast("error", result.failed.slice(0, 3).join(" ; "));
+      }
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const runReprofile = async (hash: string) => {
+    await reprofileMutation.mutateAsync(hash);
+  };
+
+  const runExport = async (node: NodeSummary) => {
+    await exportNodeMutation.mutateAsync(node);
+  };
+
+  const toggleHashSelection = (hash: string, checked: boolean) => {
+    setSelectedNodeHashes((prev) => {
+      if (checked) {
+        return prev.includes(hash) ? prev : [...prev, hash];
+      }
+      return prev.filter((item) => item !== hash);
+    });
+  };
+
   const handleFilterChange = (key: keyof NodeFilterDraft, value: string) => {
     setDraftFilters((prev) => {
       const next = { ...prev, [key]: value };
       setActiveFilters(draftToActiveFilters(next));
       setSelectedNodeHash("");
+      setSelectedNodeHashes([]);
       setDrawerOpen(false);
       setPage(0);
       return next;
@@ -412,6 +586,7 @@ export function NodesPage() {
     setDraftFilters(defaultFilterDraft);
     setActiveFilters(draftToActiveFilters(defaultFilterDraft));
     setSelectedNodeHash("");
+    setSelectedNodeHashes([]);
     setDrawerOpen(false);
     setPage(0);
   };
@@ -428,12 +603,53 @@ export function NodesPage() {
 
   const changePageSize = (next: number) => {
     setPageSize(next);
+    setSelectedNodeHashes([]);
     setPage(0);
   };
 
   const col = createColumnHelper<NodeSummary>();
 
   const nodeColumns = [
+    col.display({
+      id: "select",
+      header: () => (
+        <input
+          type="checkbox"
+          aria-label={t("选择当前页全部节点")}
+          checked={currentPageAllSelected}
+          ref={(element) => {
+            if (element) {
+              element.indeterminate = !currentPageAllSelected && currentPageSomeSelected;
+            }
+          }}
+          onChange={(event) => {
+            const checked = event.target.checked;
+            setSelectedNodeHashes((prev) => {
+              const next = new Set(prev);
+              if (checked) {
+                currentPageHashes.forEach((hash) => next.add(hash));
+              } else {
+                currentPageHashes.forEach((hash) => next.delete(hash));
+              }
+              return Array.from(next);
+            });
+          }}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ),
+      cell: (info) => {
+        const hash = info.row.original.node_hash;
+        return (
+          <input
+            type="checkbox"
+            aria-label={t("选择节点 {{hash}}", { hash })}
+            checked={selectedNodeHashes.includes(hash)}
+            onChange={(event) => toggleHashSelection(hash, event.target.checked)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        );
+      },
+    }),
     col.accessor((row) => firstTag(row), {
       id: "tag",
       header: () => (
@@ -456,7 +672,8 @@ export function NodesPage() {
         </button>
       ),
       cell: (info) => {
-        const val = regionToFlag(info.getValue());
+        const node = info.row.original;
+        const val = !info.getValue() && node.has_outbound && !node.egress_ip ? t("待出口探测") : regionToFlag(info.getValue());
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
@@ -467,13 +684,26 @@ export function NodesPage() {
     col.accessor("egress_ip", {
       header: t("出口 IP"),
       cell: (info) => {
-        const val = info.getValue() || "-";
+        const node = info.row.original;
+        const val = info.getValue() || (node.has_outbound ? t("待出口探测") : "-");
         return (
           <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
             {val}
           </div>
         );
       },
+    }),
+      col.accessor("egress_network_type", {
+        header: t("网络类型"),
+        cell: (info) => networkTypeLabel(info.getValue(), t),
+      }),
+    col.accessor("profile_state", {
+      header: t("画像状态"),
+      cell: (info) => (
+        <Badge variant={profileStateBadgeVariant(info.getValue())}>
+          {profileStateLabel(info.getValue(), t)}
+        </Badge>
+      ),
     }),
     col.display({
       id: "reference_latency_ms",
@@ -491,8 +721,17 @@ export function NodesPage() {
         );
       },
     }),
+    col.accessor("quality_score", {
+      header: () => (
+        <button type="button" className="table-sort-btn" onClick={() => changeSort("quality_score")}>
+          {t("质量分")}
+          <span>{sortIndicator(sortBy === "quality_score", sortOrder)}</span>
+        </button>
+      ),
+      cell: (info) => `${info.getValue()} / ${info.row.original.quality_grade}`,
+    }),
     col.accessor("last_latency_probe_attempt", {
-      header: t("上次探测"),
+      header: t("上次延迟探测"),
       cell: (info) => formatRelativeTime(info.getValue()),
     }),
     col.accessor("failure_count", {
@@ -553,7 +792,7 @@ export function NodesPage() {
               variant="ghost"
               title={t("触发出口探测")}
               onClick={() => void runProbeEgress(node.node_hash)}
-              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
             >
               <Globe size={14} />
             </Button>
@@ -562,9 +801,27 @@ export function NodesPage() {
               variant="ghost"
               title={t("触发延迟探测")}
               onClick={() => void runProbeLatency(node.node_hash)}
-              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
             >
               <Zap size={14} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("重新检测网络类型")}
+              onClick={() => void runReprofile(node.node_hash)}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
+            >
+              <Sparkles size={14} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("导出代理")}
+              onClick={() => void runExport(node)}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
+            >
+              <Download size={14} />
             </Button>
           </div>
         );
@@ -588,6 +845,9 @@ export function NodesPage() {
           <div>
             <h3>{t("节点列表")}</h3>
             <p>{t("共 {{total}} 个节点，{{healthy}} 个健康 IP", { total: nodesPage.total, healthy: nodesPage.unique_healthy_egress_ips })}</p>
+            {selectedNodeHashes.length ? (
+              <p className="muted">{t("已选中 {{count}} 个节点，可批量重新检测网络类型。", { count: selectedNodeHashes.length })}</p>
+            ) : null}
           </div>
 
           <div
@@ -599,6 +859,23 @@ export function NodesPage() {
               alignItems: "flex-end",
             }}
           >
+            {selectedNodeHashes.length ? (
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void batchReprofileMutation.mutateAsync(selectedNodeHashes)}
+                  disabled={batchReprofileMutation.isPending}
+                >
+                  <Sparkles size={16} />
+                  {batchReprofileMutation.isPending ? t("重检中...") : t("批量重检画像")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedNodeHashes([])}>
+                  <Eraser size={16} />
+                  {t("清空选择")}
+                </Button>
+              </div>
+            ) : null}
             <div style={NODE_FILTER_ITEM_STYLE}>
               <label htmlFor="node-tag-keyword" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                 {t("节点名")}
@@ -678,6 +955,92 @@ export function NodesPage() {
                 value={draftFilters.egress_ip}
                 onChange={(event) => handleFilterChange("egress_ip", event.target.value)}
                 placeholder="IP / CIDR"
+                style={NODE_FILTER_CONTROL_STYLE}
+              />
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-network-type" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("网络类型")}
+              </label>
+              <Select
+                id="node-network-type"
+                value={draftFilters.network_type}
+                onChange={(event) => handleFilterChange("network_type", event.target.value)}
+                style={NODE_FILTER_CONTROL_STYLE}
+              >
+                <option value="">{t("全部")}</option>
+                <option value="RESIDENTIAL">{t("家宽 / 住宅")}</option>
+                <option value="DATACENTER">{t("机房")}</option>
+                <option value="MOBILE">{t("移动")}</option>
+                <option value="UNKNOWN">{t("未知")}</option>
+              </Select>
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-profiled" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("画像状态")}
+              </label>
+              <Select
+                id="node-profiled"
+                value={draftFilters.profiled}
+                onChange={(event) => handleFilterChange("profiled", event.target.value)}
+                style={NODE_FILTER_CONTROL_STYLE}
+              >
+                <option value="">{t("全部")}</option>
+                <option value="true">{t("已画像")}</option>
+                <option value="false">{t("未画像")}</option>
+              </Select>
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-min-quality-score" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("最低质量分")}
+              </label>
+              <Input
+                id="node-min-quality-score"
+                value={draftFilters.min_quality_score}
+                onChange={(event) => handleFilterChange("min_quality_score", event.target.value)}
+                placeholder="0-100"
+                style={NODE_FILTER_CONTROL_STYLE}
+              />
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-max-reference-latency" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("最大延迟")}
+              </label>
+              <Input
+                id="node-max-reference-latency"
+                value={draftFilters.max_reference_latency_ms}
+                onChange={(event) => handleFilterChange("max_reference_latency_ms", event.target.value)}
+                placeholder="ms"
+                style={NODE_FILTER_CONTROL_STYLE}
+              />
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-min-egress-stability-score" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("最低稳定性")}
+              </label>
+              <Input
+                id="node-min-egress-stability-score"
+                value={draftFilters.min_egress_stability_score}
+                onChange={(event) => handleFilterChange("min_egress_stability_score", event.target.value)}
+                placeholder="0-20"
+                style={NODE_FILTER_CONTROL_STYLE}
+              />
+            </div>
+
+            <div style={NODE_FILTER_ITEM_STYLE}>
+              <label htmlFor="node-max-circuit-open-count" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                {t("最大熔断")}
+              </label>
+              <Input
+                id="node-max-circuit-open-count"
+                value={draftFilters.max_circuit_open_count}
+                onChange={(event) => handleFilterChange("max_circuit_open_count", event.target.value)}
+                placeholder={t("累计次数")}
                 style={NODE_FILTER_CONTROL_STYLE}
               />
             </div>
@@ -827,8 +1190,25 @@ export function NodesPage() {
                   <div>
                     <span>{t("出口 / 区域")}</span>
                     <p>
-                      {detailNode.egress_ip || "-"} / {regionToFlag(detailNode.region)}
+                      {detailNode.egress_ip || (detailNode.has_outbound ? t("待出口探测") : "-")} /{" "}
+                      {!detailNode.region && detailNode.has_outbound && !detailNode.egress_ip
+                        ? t("待出口探测")
+                        : regionToFlag(detailNode.region)}
                     </p>
+                  </div>
+                  <div>
+                    <span>{t("网络类型 / 画像来源")}</span>
+                    <p>
+                      {networkTypeLabel(detailNode.egress_network_type, t)} / {detailNode.egress_profile_source || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("画像状态")}</span>
+                    <div>
+                      <Badge variant={profileStateBadgeVariant(detailNode.profile_state)}>
+                        {profileStateLabel(detailNode.profile_state, t)}
+                      </Badge>
+                    </div>
                   </div>
                   <div>
                     <span>{t("参考延迟")}</span>
@@ -841,14 +1221,82 @@ export function NodesPage() {
                     })()}
                   </div>
                   <div>
-                    <span>{t("上次探测")}</span>
+                    <span>{t("上次延迟探测")}</span>
                     <p>{formatDateTime(detailNode.last_latency_probe_attempt || "")}</p>
+                  </div>
+                  <div>
+                    <span>{t("质量 / 等级")}</span>
+                    <p>
+                      {detailNode.quality_score} / {detailNode.quality_grade || "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("稳定性 / 累计熔断")}</span>
+                    <p>
+                      {detailNode.egress_stability_score} / {detailNode.circuit_open_count_total}
+                    </p>
                   </div>
                 </div>
 
                 {detailNode.last_error ? (
                   <div className="callout callout-error">{t("最近错误：{{message}}", { message: detailNode.last_error })}</div>
                 ) : null}
+              </section>
+
+              <section className="platform-drawer-section">
+                <div className="platform-drawer-section-head">
+                  <h4>{t("画像与质量")}</h4>
+                  <p>{t("出口画像、运营商归属与长期稳定性指标。")}</p>
+                </div>
+
+                <div className="stats-grid">
+                  <div>
+                    <span>ASN</span>
+                    <p>{detailNode.egress_asn ? `AS${detailNode.egress_asn}` : "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("ASN 名称")}</span>
+                    <p>{detailNode.egress_asn_name || "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("ASN 类型")}</span>
+                    <p>{detailNode.egress_asn_type || "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("Provider")}</span>
+                    <p>{detailNode.egress_provider || "-"}</p>
+                  </div>
+                  <div>
+                    <span>{t("画像更新时间")}</span>
+                    <p>{formatDateTime(detailNode.egress_profile_updated_at || "")}</p>
+                  </div>
+                  <div>
+                    <span>{t("探测成功 / 失败")}</span>
+                    <p>
+                      {detailNode.egress_probe_success_count_total} / {detailNode.egress_probe_failure_count_total}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("出口变更次数")}</span>
+                    <p>{detailNode.egress_ip_change_count_total}</p>
+                  </div>
+                  <div>
+                    <span>{t("最近出口变更")}</span>
+                    <p>{formatDateTime(detailNode.last_egress_ip_change_at || "")}</p>
+                  </div>
+                  <div>
+                    <span>{t("最近出口探测")}</span>
+                    <p>{formatDateTime(detailNode.last_egress_update || "")}</p>
+                  </div>
+                  <div>
+                    <span>{t("最近探测尝试")}</span>
+                    <p>{formatDateTime(detailNode.last_egress_update_attempt || "")}</p>
+                  </div>
+                  <div>
+                    <span>{t("最近权威延迟探测")}</span>
+                    <p>{formatDateTime(detailNode.last_authority_latency_probe_attempt || "")}</p>
+                  </div>
+                </div>
               </section>
 
               <section className="platform-drawer-section">
@@ -877,6 +1325,19 @@ export function NodesPage() {
                 <div className="platform-ops-list">
                   <div className="platform-op-item">
                     <div className="platform-op-copy">
+                      <h5>{t("导出通用代理")}</h5>
+                      <p className="platform-op-hint">{t("仅 HTTP / HTTPS / SOCKS 节点支持导出通用代理 URI。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void runExport(detailNode)}
+                      disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
+                    >
+                      {exportNodeMutation.isPending ? t("导出中...") : t("导出代理 URI")}
+                    </Button>
+                  </div>
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
                       <h5>{t("出口探测")}</h5>
                       <p className="platform-op-hint">{t("检查节点当前出口 IP。")}</p>
                     </div>
@@ -901,8 +1362,52 @@ export function NodesPage() {
                       {probeLatencyMutation.isPending ? t("探测中...") : t("触发延迟探测")}
                     </Button>
                   </div>
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("重新检测网络类型")}</h5>
+                      <p className="platform-op-hint">{t("基于当前出口 IP 重新识别住宅/机房/移动类型，并刷新质量画像。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void runReprofile(detailNode.node_hash)}
+                      disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
+                    >
+                      {reprofileMutation.isPending ? t("重检中...") : t("重新检测画像")}
+                    </Button>
+                  </div>
                 </div>
               </section>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {exportModalOpen && exportResult ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("节点导出")}>
+          <Card className="modal-card">
+            <div className="modal-header">
+              <div>
+                <h3>{t("节点导出")}</h3>
+                <p className="muted">{exportNodeLabel || exportResult.node_hash}</p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setExportModalOpen(false)}>
+                <X size={16} />
+              </Button>
+            </div>
+
+            <div className="platform-ops-list" style={{ marginTop: "1rem" }}>
+              {exportResult.exports.map((item) => (
+                <div key={`${item.scheme}:${item.uri}`} className="platform-op-item">
+                  <div className="platform-op-copy" style={{ minWidth: 0 }}>
+                    <h5>{item.label}</h5>
+                    <p className="platform-op-hint">{t("直接复制到浏览器、脚本或外部服务里使用。")}</p>
+                    <Input value={item.uri} readOnly style={{ marginTop: "0.5rem" }} />
+                  </div>
+                  <Button variant="secondary" onClick={() => void copyText(item.uri, t("代理地址已复制"))}>
+                    {t("复制")}
+                  </Button>
+                </div>
+              ))}
             </div>
           </Card>
         </div>

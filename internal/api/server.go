@@ -74,6 +74,8 @@ func NewServerWithAddress(
 	if cp != nil {
 		// System config mutations.
 		authed.Handle("PATCH /api/v1/system/config", HandlePatchSystemConfig(cp))
+		authed.Handle("GET /api/v1/system/tasks/status", HandleSystemTaskStatus(cp))
+		authed.Handle("POST /api/v1/system/actions/reprofile-known-nodes", HandleQueueKnownNodeReprofile(cp))
 
 		// Platforms.
 		authed.Handle("GET /api/v1/platforms", HandleListPlatforms(cp))
@@ -100,6 +102,7 @@ func NewServerWithAddress(
 		authed.Handle("PATCH /api/v1/subscriptions/{id}", HandleUpdateSubscription(cp))
 		authed.Handle("DELETE /api/v1/subscriptions/{id}", HandleDeleteSubscription(cp))
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/refresh", HandleRefreshSubscription(cp))
+		authed.Handle("POST /api/v1/subscriptions/{id}/actions/fill-unknown-nodes", HandleFillSubscriptionUnknownNodes(cp))
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/cleanup-circuit-open-nodes", HandleCleanupSubscriptionCircuitOpenNodes(cp))
 
 		// Account header rules.
@@ -111,9 +114,12 @@ func NewServerWithAddress(
 
 		// Nodes.
 		authed.Handle("GET /api/v1/nodes", HandleListNodes(cp))
+		authed.Handle("POST /api/v1/nodes/actions/reprofile", HandleBatchReprofileNodes(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}", HandleGetNode(cp))
+		authed.Handle("GET /api/v1/nodes/{hash}/export", HandleExportNode(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/probe-egress", HandleProbeEgress(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/probe-latency", HandleProbeLatency(cp))
+		authed.Handle("POST /api/v1/nodes/{hash}/actions/reprofile", HandleReprofileNode(cp))
 
 		// GeoIP.
 		authed.Handle("GET /api/v1/geoip/status", HandleGeoIPStatus(cp))

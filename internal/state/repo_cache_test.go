@@ -133,6 +133,61 @@ func TestCacheRepo_NodesDynamic_BulkDelete(t *testing.T) {
 	}
 }
 
+// --- egress_profile_cache ---
+
+func TestCacheRepo_EgressProfileCache_GetUpsertDelete(t *testing.T) {
+	repo := newTestCacheRepo(t)
+
+	entry := model.EgressProfileCacheEntry{
+		EgressIP:                 "203.0.113.10",
+		EgressNetworkType:        string(model.EgressNetworkTypeResidential),
+		EgressASN:                64512,
+		EgressASNName:            "Example ISP",
+		EgressASNType:            "ISP",
+		EgressProvider:           "Example ISP",
+		EgressProfileSource:      string(model.EgressProfileSourceOnline),
+		EgressProfileUpdatedAtNs: 123,
+	}
+	if err := repo.UpsertEgressProfileCache(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.GetEgressProfileCache(entry.EgressIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected cached entry")
+	}
+	if !reflect.DeepEqual(*got, entry) {
+		t.Fatalf("cache entry mismatch: got %+v want %+v", *got, entry)
+	}
+
+	entry.EgressProvider = "Updated Provider"
+	entry.EgressProfileUpdatedAtNs = 456
+	if err := repo.UpsertEgressProfileCache(entry); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetEgressProfileCache(entry.EgressIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.EgressProvider != "Updated Provider" || got.EgressProfileUpdatedAtNs != 456 {
+		t.Fatalf("cache entry not updated: %+v", got)
+	}
+
+	if err := repo.DeleteEgressProfileCache(entry.EgressIP); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetEgressProfileCache(entry.EgressIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("expected deleted cache entry, got %+v", got)
+	}
+}
+
 // --- node_latency ---
 
 func TestCacheRepo_NodeLatency_BulkUpsertAndLoad(t *testing.T) {

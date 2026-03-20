@@ -69,6 +69,11 @@ type RouteResult struct {
 	NodeHash         node.Hash
 	EgressIP         netip.Addr
 	NodeTag          string // display tag: "<Subscription>/<Tag>" (DESIGN.md §601)
+	EgressNetworkType string
+	EgressASN         int64
+	EgressASNName     string
+	QualityScore      int
+	QualityGrade      string
 	LeaseCreated     bool
 	AccessMode       string
 	LeaseAction      string
@@ -112,6 +117,13 @@ func (r *Router) RouteRequestWithOptions(platName, account, target string, opts 
 	result = withPlatformContext(plat, result)
 	if r.nodeTagResolver != nil {
 		result.NodeTag = r.nodeTagResolver(result.NodeHash)
+	}
+	if entry, ok := r.pool.GetEntry(result.NodeHash); ok && entry != nil {
+		result.EgressNetworkType = string(entry.GetEgressNetworkType())
+		result.EgressASN = entry.GetEgressASN()
+		result.EgressASNName = entry.GetEgressASNName()
+		result.QualityScore = int(entry.QualityScore.Load())
+		result.QualityGrade = string(entry.GetQualityGrade())
 	}
 	return result, nil
 }

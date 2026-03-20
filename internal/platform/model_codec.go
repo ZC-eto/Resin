@@ -38,6 +38,24 @@ func CompileRegexFilters(regexFilters []string) ([]*regexp.Regexp, error) {
 	return compiled, nil
 }
 
+// ValidateNetworkTypeFilters validates configured network types.
+func ValidateNetworkTypeFilters(filters []string) error {
+	for i, raw := range filters {
+		normalized := model.NormalizeEgressNetworkType(strings.ToUpper(strings.TrimSpace(raw)))
+		if normalized == model.EgressNetworkTypeUnknown && strings.ToUpper(strings.TrimSpace(raw)) != string(model.EgressNetworkTypeUnknown) {
+			return fmt.Errorf(
+				"network_type_filters[%d]: must be one of %s, %s, %s, %s",
+				i,
+				model.EgressNetworkTypeResidential,
+				model.EgressNetworkTypeDatacenter,
+				model.EgressNetworkTypeMobile,
+				model.EgressNetworkTypeUnknown,
+			)
+		}
+	}
+	return nil
+}
+
 // NewConfiguredPlatform builds a runtime platform with non-filter settings applied.
 func NewConfiguredPlatform(
 	id, name string,
@@ -86,6 +104,9 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 	if err := ValidateRegionFilters(mp.RegionFilters); err != nil {
 		return nil, err
 	}
+	if err := ValidateNetworkTypeFilters(mp.NetworkTypeFilters); err != nil {
+		return nil, err
+	}
 	emptyAccountBehavior := mp.ReverseProxyEmptyAccountBehavior
 	if !ReverseProxyEmptyAccountBehavior(emptyAccountBehavior).IsValid() {
 		emptyAccountBehavior = string(ReverseProxyEmptyAccountBehaviorRandom)
@@ -110,7 +131,12 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		)
 	}
 
-	return NewConfiguredPlatform(
+	networkTypes := make([]model.EgressNetworkType, 0, len(mp.NetworkTypeFilters))
+	for _, raw := range mp.NetworkTypeFilters {
+		networkTypes = append(networkTypes, model.NormalizeEgressNetworkType(strings.ToUpper(strings.TrimSpace(raw))))
+	}
+
+	plat := NewConfiguredPlatform(
 		mp.ID,
 		mp.Name,
 		regexFilters,
@@ -122,5 +148,12 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		emptyAccountBehavior,
 		fixedHeader,
 		mp.AllocationPolicy,
-	), nil
+	)
+	plat.SubscriptionFilters = append([]string(nil), mp.SubscriptionFilters...)
+	plat.NetworkTypeFilters = networkTypes
+	plat.MinQualityScore = mp.MinQualityScore
+	plat.MaxReferenceLatencyMs = mp.MaxReferenceLatencyMs
+	plat.MinEgressStabilityScore = mp.MinEgressStabilityScore
+	plat.MaxCircuitOpenCount = mp.MaxCircuitOpenCount
+	return plat, nil
 }

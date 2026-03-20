@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 )
 
@@ -30,8 +31,14 @@ type Platform struct {
 	Name string
 
 	// Filter configuration.
-	RegexFilters  []*regexp.Regexp
-	RegionFilters []string // lowercase ISO codes
+	RegexFilters        []*regexp.Regexp
+	RegionFilters       []string // lowercase ISO codes
+	SubscriptionFilters []string
+	NetworkTypeFilters  []model.EgressNetworkType
+	MinQualityScore     *int
+	MaxReferenceLatencyMs *int
+	MinEgressStabilityScore *int
+	MaxCircuitOpenCount *int
 
 	// Other config fields.
 	StickyTTLNs                      int64
@@ -50,7 +57,11 @@ type Platform struct {
 }
 
 // NewPlatform creates a Platform with an empty routable view.
-func NewPlatform(id, name string, regexFilters []*regexp.Regexp, regionFilters []string) *Platform {
+func NewPlatform(
+	id, name string,
+	regexFilters []*regexp.Regexp,
+	regionFilters []string,
+) *Platform {
 	return &Platform{
 		ID:            id,
 		Name:          name,
@@ -116,13 +127,22 @@ func (p *Platform) evaluateNode(
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
 ) bool {
+	allowedSubIDs := make(map[string]struct{}, len(p.SubscriptionFilters))
+	for _, subID := range p.SubscriptionFilters {
+		allowedSubIDs[subID] = struct{}{}
+	}
+
+	if !entry.MatchesSubscriptionFilter(subLookup, allowedSubIDs) {
+		return false
+	}
+
 	// 1. Healthy for routing (outbound ready + circuit not open).
 	if !entry.IsHealthy() {
 		return false
 	}
 
 	// 2. Tag regex match.
-	if !entry.MatchRegexs(p.RegexFilters, subLookup) {
+	if !entry.MatchRegexsInSubscriptions(p.RegexFilters, subLookup, allowedSubIDs) {
 		return false
 	}
 
@@ -138,6 +158,25 @@ func (p *Platform) evaluateNode(
 		if !matchRegion(region, p.RegionFilters) {
 			return false
 		}
+	}
+
+	if len(p.NetworkTypeFilters) > 0 && !slices.Contains(p.NetworkTypeFilters, entry.GetEgressNetworkType()) {
+		return false
+	}
+	if p.MinQualityScore != nil && int(entry.QualityScore.Load()) < *p.MinQualityScore {
+		return false
+	}
+	if p.MaxReferenceLatencyMs != nil {
+		latencyMs, ok := entry.ReferenceLatencyMs(nil)
+		if !ok || latencyMs > float64(*p.MaxReferenceLatencyMs) {
+			return false
+		}
+	}
+	if p.MinEgressStabilityScore != nil && entry.EgressStabilityScore() < *p.MinEgressStabilityScore {
+		return false
+	}
+	if p.MaxCircuitOpenCount != nil && int(entry.CircuitOpenCountTotal.Load()) > *p.MaxCircuitOpenCount {
+		return false
 	}
 
 	// 5. Has at least one latency record.

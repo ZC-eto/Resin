@@ -18,7 +18,7 @@ import (
 	"github.com/Resinat/Resin/internal/state"
 )
 
-const logSummarySelectColumns = "id, ts_ns, proxy_type, client_ip, platform_id, platform_name, account, access_mode, lease_action, rotate_requested, rotate_applied, rotate_source, target_host, target_url, node_hash, node_tag, egress_ip, previous_egress_ip, duration_ns, net_ok, http_method, http_status, resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg, ingress_bytes, egress_bytes, payload_present, req_headers_len, req_body_len, resp_headers_len, resp_body_len, req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated"
+const logSummarySelectColumns = "id, ts_ns, proxy_type, client_ip, platform_id, platform_name, account, access_mode, lease_action, rotate_requested, rotate_applied, rotate_source, target_host, target_url, node_hash, node_tag, egress_ip, previous_egress_ip, egress_network_type, egress_asn, egress_asn_name, quality_score, quality_grade, duration_ns, net_ok, http_method, http_status, resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg, ingress_bytes, egress_bytes, payload_present, req_headers_len, req_body_len, resp_headers_len, resp_body_len, req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated"
 
 // Repo manages rolling SQLite databases for request logs.
 // Each DB is named request_logs-<unix_ms>.db and lives in logDir.
@@ -114,13 +114,26 @@ func (r *Repo) InsertBatch(entries []proxy.RequestLogEntry) (int, error) {
 		platform_id, platform_name, account, access_mode, lease_action,
 		rotate_requested, rotate_applied, rotate_source,
 		target_host, target_url, node_hash, node_tag, egress_ip, previous_egress_ip,
+		egress_network_type, egress_asn, egress_asn_name, quality_score, quality_grade,
 		duration_ns, net_ok, http_method, http_status,
 		resin_error, upstream_stage, upstream_err_kind, upstream_errno, upstream_err_msg,
 		ingress_bytes, egress_bytes,
 		payload_present,
 		req_headers_len, req_body_len, resp_headers_len, resp_body_len,
 		req_headers_truncated, req_body_truncated, resp_headers_truncated, resp_body_truncated
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	) VALUES (
+		?, ?, ?, ?,
+		?, ?, ?, ?, ?,
+		?, ?, ?,
+		?, ?, ?, ?, ?, ?,
+		?, ?, ?, ?, ?,
+		?, ?, ?, ?,
+		?, ?, ?, ?, ?,
+		?, ?,
+		?,
+		?, ?, ?, ?,
+		?, ?, ?, ?
+	)`)
 	if err != nil {
 		return 0, fmt.Errorf("requestlog repo prepare log: %w", err)
 	}
@@ -155,6 +168,7 @@ func (r *Repo) InsertBatch(entries []proxy.RequestLogEntry) (int, error) {
 			e.PlatformID, e.PlatformName, e.Account, e.AccessMode, e.LeaseAction,
 			boolToInt(e.RotateRequested), boolToInt(e.RotateApplied), e.RotateSource,
 			e.TargetHost, e.TargetURL, e.NodeHash, e.NodeTag, e.EgressIP, e.PreviousEgressIP,
+			e.EgressNetworkType, e.EgressASN, e.EgressASNName, e.QualityScore, e.QualityGrade,
 			e.DurationNs, netOK, e.HTTPMethod, e.HTTPStatus,
 			e.ResinError, e.UpstreamStage, e.UpstreamErrKind, e.UpstreamErrno, e.UpstreamErrMsg,
 			e.IngressBytes, e.EgressBytes,
@@ -219,6 +233,11 @@ type LogSummary struct {
 	NodeTag         string `json:"node_tag"`
 	EgressIP        string `json:"egress_ip"`
 	PreviousEgressIP string `json:"previous_egress_ip"`
+	EgressNetworkType string `json:"egress_network_type"`
+	EgressASN       int64  `json:"egress_asn"`
+	EgressASNName   string `json:"egress_asn_name"`
+	QualityScore    int    `json:"quality_score"`
+	QualityGrade    string `json:"quality_grade"`
 	DurationNs      int64  `json:"duration_ns"`
 	NetOK           bool   `json:"net_ok"`
 	HTTPMethod      string `json:"http_method"`
@@ -260,8 +279,10 @@ type ListFilter struct {
 	TargetHost   string
 	Fuzzy        bool // Enables case-insensitive substring matching on platform_id/platform_name/account/target_host.
 	EgressIP     string
+	EgressNetworkType string
 	NetOK        *bool // true/false filter
 	HTTPStatus   *int  // exact match
+	MinQualityScore *int
 	Before       int64 // ts_ns < Before (0 means no upper bound)
 	After        int64 // ts_ns > After (0 means no lower bound)
 	Limit        int
@@ -570,6 +591,10 @@ func (r *Repo) queryLogs(db *sql.DB, f ListFilter, limit int) ([]LogSummary, err
 		where = append(where, "egress_ip = ?")
 		args = append(args, f.EgressIP)
 	}
+	if f.EgressNetworkType != "" {
+		where = append(where, "egress_network_type = ?")
+		args = append(args, f.EgressNetworkType)
+	}
 	if f.NetOK != nil {
 		where = append(where, "net_ok = ?")
 		args = append(args, boolToInt(*f.NetOK))
@@ -577,6 +602,10 @@ func (r *Repo) queryLogs(db *sql.DB, f ListFilter, limit int) ([]LogSummary, err
 	if f.HTTPStatus != nil {
 		where = append(where, "http_status = ?")
 		args = append(args, *f.HTTPStatus)
+	}
+	if f.MinQualityScore != nil {
+		where = append(where, "quality_score >= ?")
+		args = append(args, *f.MinQualityScore)
 	}
 	if f.Before > 0 {
 		where = append(where, "ts_ns < ?")
@@ -653,6 +682,7 @@ func scanLogSummary(s rowScanner) (LogSummary, error) {
 		&row.PlatformID, &row.PlatformName, &row.Account, &row.AccessMode, &row.LeaseAction,
 		&rotateRequested, &rotateApplied, &row.RotateSource,
 		&row.TargetHost, &row.TargetURL, &row.NodeHash, &row.NodeTag, &row.EgressIP, &row.PreviousEgressIP,
+		&row.EgressNetworkType, &row.EgressASN, &row.EgressASNName, &row.QualityScore, &row.QualityGrade,
 		&row.DurationNs, &netOK, &row.HTTPMethod, &row.HTTPStatus,
 		&row.ResinError, &row.UpstreamStage, &row.UpstreamErrKind, &row.UpstreamErrno, &row.UpstreamErrMsg,
 		&row.IngressBytes, &row.EgressBytes,
@@ -693,6 +723,11 @@ var requestLogExtraColumns = []requestLogColumnSpec{
 	{Name: "rotate_applied", DDL: "INTEGER NOT NULL DEFAULT 0"},
 	{Name: "rotate_source", DDL: "TEXT NOT NULL DEFAULT ''"},
 	{Name: "previous_egress_ip", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "egress_network_type", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "egress_asn", DDL: "INTEGER NOT NULL DEFAULT 0"},
+	{Name: "egress_asn_name", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Name: "quality_score", DDL: "INTEGER NOT NULL DEFAULT 0"},
+	{Name: "quality_grade", DDL: "TEXT NOT NULL DEFAULT ''"},
 }
 
 func ensureRequestLogSchema(db *sql.DB) error {
@@ -714,6 +749,8 @@ func ensureRequestLogSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 CREATE INDEX IF NOT EXISTS idx_request_logs_access_mode ON request_logs(access_mode);
 CREATE INDEX IF NOT EXISTS idx_request_logs_lease_action ON request_logs(lease_action);
+CREATE INDEX IF NOT EXISTS idx_request_logs_quality_score ON request_logs(quality_score);
+CREATE INDEX IF NOT EXISTS idx_request_logs_egress_network_type ON request_logs(egress_network_type);
 `)
 	if err != nil {
 		return fmt.Errorf("ensure requestlog indexes: %w", err)

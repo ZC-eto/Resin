@@ -547,6 +547,105 @@ func TestIsLatencyProbeDue_UsesAttemptTimestamps(t *testing.T) {
 	}
 }
 
+func TestCurrentEgressProbeInterval_UsesFastRetryWhenEgressUnknown(t *testing.T) {
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-interval"}`))
+	entry := node.NewNodeEntry(hash, []byte(`{"type":"egress-interval"}`), time.Now(), 16)
+
+	if got := currentEgressProbeInterval(entry, 24*time.Hour); got != unknownEgressRetryCap {
+		t.Fatalf("interval: got %v, want %v", got, unknownEgressRetryCap)
+	}
+
+	entry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
+	if got := currentEgressProbeInterval(entry, 24*time.Hour); got != 24*time.Hour {
+		t.Fatalf("known-egress interval: got %v, want %v", got, 24*time.Hour)
+	}
+}
+
+func TestCurrentEgressProbeInterval_HonorsShortConfiguredInterval(t *testing.T) {
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-short-interval"}`))
+	entry := node.NewNodeEntry(hash, []byte(`{"type":"egress-short-interval"}`), time.Now(), 16)
+
+	if got := currentEgressProbeInterval(entry, 2*time.Minute); got != 2*time.Minute {
+		t.Fatalf("interval: got %v, want %v", got, 2*time.Minute)
+	}
+}
+
+func TestScanEgress_RetriesUnknownEgressSooner(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-rescan-unknown"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-rescan-unknown"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+	entry.LastEgressUpdateAttempt.Store(time.Now().Add(-20 * time.Minute).UnixNano())
+
+	var called atomic.Int32
+	done := make(chan struct{}, 1)
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			called.Add(1)
+			done <- struct{}{}
+			return []byte("ip=203.0.113.11\nloc=US"), 5 * time.Millisecond, nil
+		},
+		MaxEgressTestInterval: func() time.Duration { return 24 * time.Hour },
+	})
+
+	mgr.scanEgress()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected unknown-egress node to be retried")
+	}
+
+	if got := called.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 retry, got %d", got)
+	}
+}
+
+func TestScanEgress_DoesNotRescanKnownEgressBeforeConfiguredInterval(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"egress-rescan-known"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"egress-rescan-known"}`), "sub1")
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+	entry.SetEgressIP(netip.MustParseAddr("203.0.113.12"))
+	entry.LastEgressUpdateAttempt.Store(time.Now().Add(-20 * time.Minute).UnixNano())
+
+	var called atomic.Int32
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			called.Add(1)
+			return []byte("ip=203.0.113.12\nloc=US"), 5 * time.Millisecond, nil
+		},
+		MaxEgressTestInterval: func() time.Duration { return 24 * time.Hour },
+	})
+
+	mgr.scanEgress()
+	time.Sleep(50 * time.Millisecond)
+
+	if got := called.Load(); got != 0 {
+		t.Fatalf("expected no rescan before interval, got %d", got)
+	}
+}
+
 // TestParseCloudflareTrace_Success verifies IP extraction from trace body.
 func TestParseCloudflareTrace_Success(t *testing.T) {
 	body := []byte("fl=abc\nip=1.2.3.4\nloc=US\nts=12345")

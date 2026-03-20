@@ -1,11 +1,13 @@
 import { apiRequest } from "../../lib/api-client";
-import type { PageResponse, Platform, PlatformCreateInput, PlatformUpdateInput } from "./types";
+import type { PageResponse, Platform, PlatformCreateInput, PlatformPreviewResponse, PlatformUpdateInput } from "./types";
 
 const basePath = "/api/v1/platforms";
 
 type ApiPlatform = Omit<Platform, "regex_filters" | "region_filters"> & {
   regex_filters?: string[] | null;
   region_filters?: string[] | null;
+  subscription_filters?: string[] | null;
+  network_type_filters?: Platform["network_type_filters"] | null;
   routable_node_count?: number | null;
   reverse_proxy_miss_action?: Platform["reverse_proxy_miss_action"] | null;
   reverse_proxy_empty_account_behavior?: Platform["reverse_proxy_empty_account_behavior"] | null;
@@ -45,6 +47,8 @@ function normalizePlatform(raw: ApiPlatform): Platform {
     reverse_proxy_miss_action: parseMissAction(raw.reverse_proxy_miss_action),
     regex_filters: Array.isArray(raw.regex_filters) ? raw.regex_filters : [],
     region_filters: Array.isArray(raw.region_filters) ? raw.region_filters : [],
+    subscription_filters: Array.isArray(raw.subscription_filters) ? raw.subscription_filters : [],
+    network_type_filters: Array.isArray(raw.network_type_filters) ? raw.network_type_filters : [],
     routable_node_count: typeof raw.routable_node_count === "number" ? raw.routable_node_count : 0,
     reverse_proxy_empty_account_behavior:
       raw.reverse_proxy_empty_account_behavior === "RANDOM" ||
@@ -136,5 +140,12 @@ export async function rotatePlatformLease(id: string, account: string): Promise<
   await apiRequest<{ status: "ok" }>(`${basePath}/${id}/actions/rotate-lease`, {
     method: "POST",
     body: { account },
+  });
+}
+
+export async function previewPlatformFilters(platformId: string): Promise<PlatformPreviewResponse> {
+  return apiRequest<PlatformPreviewResponse>(`${basePath}/preview-filter?limit=1&offset=0`, {
+    method: "POST",
+    body: { platform_id: platformId },
   });
 }

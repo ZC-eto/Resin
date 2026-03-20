@@ -12,7 +12,15 @@ func subscriptionMatchesKeyword(s service.SubscriptionResponse, keyword string) 
 		return strings.Contains(strings.ToLower(v), keyword)
 	}
 
-	return contains(s.ID) || contains(s.Name) || contains(s.URL) || contains(s.SourceType)
+	if contains(s.ID) || contains(s.Name) || contains(s.URL) || contains(s.SourceType) {
+		return true
+	}
+	for _, source := range s.Sources {
+		if contains(source.Label) || contains(source.URL) || contains(source.Type) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterSubscriptionsByKeyword(subs []service.SubscriptionResponse, rawKeyword string) []service.SubscriptionResponse {
@@ -158,6 +166,23 @@ func HandleRefreshSubscription(cp *service.ControlPlaneService) http.HandlerFunc
 			return
 		}
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// HandleFillSubscriptionUnknownNodes returns a handler for
+// POST /api/v1/subscriptions/{id}/actions/fill-unknown-nodes.
+func HandleFillSubscriptionUnknownNodes(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := requireUUIDPathParam(w, r, "id", "subscription_id")
+		if !ok {
+			return
+		}
+		result, err := cp.FillSubscriptionUnknownNodes(id)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 	}
 }
 

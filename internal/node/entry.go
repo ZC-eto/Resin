@@ -36,6 +36,20 @@ type NodeEntry struct {
 	egressIP         atomic.Pointer[netip.Addr] // nil before first store
 	egressRegion     atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
 	LastEgressUpdate atomic.Int64               // unix-nano of last successful egress-IP sample
+	egressNetworkType atomic.Pointer[string]
+	egressASN         atomic.Int64
+	egressASNName     atomic.Pointer[string]
+	egressASNType     atomic.Pointer[string]
+	egressProvider    atomic.Pointer[string]
+	egressProfileSource atomic.Pointer[string]
+	LastEgressProfileUpdated atomic.Int64
+	QualityScore      atomic.Int32
+	qualityGrade      atomic.Pointer[string]
+	EgressProbeSuccessCountTotal atomic.Int64
+	EgressProbeFailureCountTotal atomic.Int64
+	EgressIPChangeCountTotal atomic.Int64
+	LastEgressIPChangeAt atomic.Int64
+	CircuitOpenCountTotal atomic.Int64
 	// Probe-attempt timestamps (unix-nano). These are updated regardless of
 	// probe success/failure, and are used by probe schedulers.
 	LastLatencyProbeAttempt          atomic.Int64
@@ -114,6 +128,16 @@ func (e *NodeEntry) SubscriptionCount() int {
 //   - if subLookup is nil, it matches everything (compatibility fallback);
 //   - otherwise, it matches only when at least one enabled subscription exists.
 func (e *NodeEntry) MatchRegexs(regexes []*regexp.Regexp, subLookup SubLookupFunc) bool {
+	return e.MatchRegexsInSubscriptions(regexes, subLookup, nil)
+}
+
+// MatchRegexsInSubscriptions tests regex filters against either all enabled
+// subscriptions or a caller-provided allowed subscription subset.
+func (e *NodeEntry) MatchRegexsInSubscriptions(
+	regexes []*regexp.Regexp,
+	subLookup SubLookupFunc,
+	allowedSubIDs map[string]struct{},
+) bool {
 	if subLookup == nil {
 		return len(regexes) == 0
 	}
@@ -125,6 +149,11 @@ func (e *NodeEntry) MatchRegexs(regexes []*regexp.Regexp, subLookup SubLookupFun
 
 	if len(regexes) == 0 {
 		for _, subID := range subs {
+			if len(allowedSubIDs) > 0 {
+				if _, ok := allowedSubIDs[subID]; !ok {
+					continue
+				}
+			}
 			_, enabled, _, ok := subLookup(subID, e.Hash)
 			if ok && enabled {
 				return true
@@ -139,6 +168,11 @@ func (e *NodeEntry) MatchRegexs(regexes []*regexp.Regexp, subLookup SubLookupFun
 	}
 
 	for _, subID := range subs {
+		if len(allowedSubIDs) > 0 {
+			if _, ok := allowedSubIDs[subID]; !ok {
+				continue
+			}
+		}
 		name, enabled, tags, ok := subLookup(subID, e.Hash)
 		if !ok || !enabled {
 			continue
@@ -161,6 +195,32 @@ func matchesAll(s string, regexes []*regexp.Regexp) bool {
 		}
 	}
 	return true
+}
+
+// MatchesSubscriptionFilter returns true when the node belongs to any enabled
+// subscription from the allowed set. Empty allowedSubIDs means "all enabled".
+func (e *NodeEntry) MatchesSubscriptionFilter(subLookup SubLookupFunc, allowedSubIDs map[string]struct{}) bool {
+	if subLookup == nil {
+		return len(allowedSubIDs) == 0
+	}
+
+	e.mu.RLock()
+	subs := make([]string, len(e.subscriptionIDs))
+	copy(subs, e.subscriptionIDs)
+	e.mu.RUnlock()
+
+	for _, subID := range subs {
+		if len(allowedSubIDs) > 0 {
+			if _, ok := allowedSubIDs[subID]; !ok {
+				continue
+			}
+		}
+		_, enabled, _, ok := subLookup(subID, e.Hash)
+		if ok && enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Condition helpers for platform filtering ---

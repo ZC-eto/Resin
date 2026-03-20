@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/platform"
@@ -30,6 +31,12 @@ type PlatformResponse struct {
 	RotationInterval                 string   `json:"rotation_interval"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
+	SubscriptionFilters              []string `json:"subscription_filters"`
+	NetworkTypeFilters               []string `json:"network_type_filters"`
+	MinQualityScore                  *int     `json:"min_quality_score,omitempty"`
+	MaxReferenceLatencyMs            *int     `json:"max_reference_latency_ms,omitempty"`
+	MinEgressStabilityScore          *int     `json:"min_egress_stability_score,omitempty"`
+	MaxCircuitOpenCount              *int     `json:"max_circuit_open_count,omitempty"`
 	RoutableNodeCount                int      `json:"routable_node_count"`
 	ReverseProxyMissAction           string   `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string   `json:"reverse_proxy_empty_account_behavior"`
@@ -60,6 +67,12 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		RotationInterval:                 stickyTTL,
 		RegexFilters:                     append([]string(nil), p.RegexFilters...),
 		RegionFilters:                    append([]string(nil), p.RegionFilters...),
+		SubscriptionFilters:              append([]string(nil), p.SubscriptionFilters...),
+		NetworkTypeFilters:               append([]string(nil), p.NetworkTypeFilters...),
+		MinQualityScore:                  p.MinQualityScore,
+		MaxReferenceLatencyMs:            p.MaxReferenceLatencyMs,
+		MinEgressStabilityScore:          p.MinEgressStabilityScore,
+		MaxCircuitOpenCount:              p.MaxCircuitOpenCount,
 		RoutableNodeCount:                0,
 		ReverseProxyMissAction:           p.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: behavior,
@@ -81,6 +94,17 @@ func (s *ControlPlaneService) withRoutableNodeCount(resp PlatformResponse) Platf
 	return resp
 }
 
+func (s *ControlPlaneService) currentLatencyAuthorities() []string {
+	if s == nil || s.RuntimeCfg == nil {
+		return nil
+	}
+	cfg := s.RuntimeCfg.Load()
+	if cfg == nil {
+		return nil
+	}
+	return cfg.LatencyAuthorities
+}
+
 type platformConfig struct {
 	Name                             string
 	StickyTTLNs                      int64
@@ -89,6 +113,12 @@ type platformConfig struct {
 	RotationIntervalNs               int64
 	RegexFilters                     []string
 	RegionFilters                    []string
+	SubscriptionFilters              []string
+	NetworkTypeFilters               []string
+	MinQualityScore                  *int
+	MaxReferenceLatencyMs            *int
+	MinEgressStabilityScore          *int
+	MaxCircuitOpenCount              *int
 	ReverseProxyMissAction           string
 	ReverseProxyEmptyAccountBehavior string
 	ReverseProxyFixedAccountHeader   string
@@ -110,6 +140,24 @@ func normalizePlatformEmptyAccountBehavior(raw string) string {
 	return string(platform.ReverseProxyEmptyAccountBehaviorRandom)
 }
 
+func normalizeNetworkTypeFilters(values []string) []model.EgressNetworkType {
+	result := make([]model.EgressNetworkType, 0, len(values))
+	for _, value := range values {
+		result = append(result, model.NormalizeEgressNetworkType(strings.ToUpper(strings.TrimSpace(value))))
+	}
+	return result
+}
+
+func validateNonNegativeOptionalInt(field string, value *int) *ServiceError {
+	if value == nil {
+		return nil
+	}
+	if *value < 0 {
+		return invalidArg(field + ": must be >= 0")
+	}
+	return nil
+}
+
 func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig {
 	return platformConfig{
 		Name:                   name,
@@ -119,6 +167,8 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 		RotationIntervalNs:     int64(s.EnvCfg.DefaultPlatformStickyTTL),
 		RegexFilters:           append([]string(nil), s.EnvCfg.DefaultPlatformRegexFilters...),
 		RegionFilters:          append([]string(nil), s.EnvCfg.DefaultPlatformRegionFilters...),
+		SubscriptionFilters:    []string{},
+		NetworkTypeFilters:     []string{},
 		ReverseProxyMissAction: s.EnvCfg.DefaultPlatformReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(
 			s.EnvCfg.DefaultPlatformReverseProxyEmptyAccountBehavior,
@@ -143,6 +193,12 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		RotationIntervalNs:               platform.EffectiveRotationIntervalNs(mp.RotationIntervalNs, mp.StickyTTLNs),
 		RegexFilters:                     append([]string(nil), mp.RegexFilters...),
 		RegionFilters:                    append([]string(nil), mp.RegionFilters...),
+		SubscriptionFilters:              append([]string(nil), mp.SubscriptionFilters...),
+		NetworkTypeFilters:               append([]string(nil), mp.NetworkTypeFilters...),
+		MinQualityScore:                  mp.MinQualityScore,
+		MaxReferenceLatencyMs:            mp.MaxReferenceLatencyMs,
+		MinEgressStabilityScore:          mp.MinEgressStabilityScore,
+		MaxCircuitOpenCount:              mp.MaxCircuitOpenCount,
 		ReverseProxyMissAction:           mp.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(mp.ReverseProxyEmptyAccountBehavior),
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
@@ -160,6 +216,12 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		RotationIntervalNs:               cfg.RotationIntervalNs,
 		RegexFilters:                     append([]string(nil), cfg.RegexFilters...),
 		RegionFilters:                    append([]string(nil), cfg.RegionFilters...),
+		SubscriptionFilters:              append([]string(nil), cfg.SubscriptionFilters...),
+		NetworkTypeFilters:               append([]string(nil), cfg.NetworkTypeFilters...),
+		MinQualityScore:                  cfg.MinQualityScore,
+		MaxReferenceLatencyMs:            cfg.MaxReferenceLatencyMs,
+		MinEgressStabilityScore:          cfg.MinEgressStabilityScore,
+		MaxCircuitOpenCount:              cfg.MaxCircuitOpenCount,
 		ReverseProxyMissAction:           cfg.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: cfg.ReverseProxyEmptyAccountBehavior,
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
@@ -173,7 +235,7 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 	if err != nil {
 		return nil, err
 	}
-	return platform.NewConfiguredPlatform(
+	plat := platform.NewConfiguredPlatform(
 		id,
 		cfg.Name,
 		compiledRegexFilters,
@@ -185,7 +247,14 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		cfg.ReverseProxyEmptyAccountBehavior,
 		cfg.ReverseProxyFixedAccountHeader,
 		cfg.AllocationPolicy,
-	), nil
+	)
+	plat.SubscriptionFilters = append([]string(nil), cfg.SubscriptionFilters...)
+	plat.NetworkTypeFilters = normalizeNetworkTypeFilters(cfg.NetworkTypeFilters)
+	plat.MinQualityScore = cfg.MinQualityScore
+	plat.MaxReferenceLatencyMs = cfg.MaxReferenceLatencyMs
+	plat.MinEgressStabilityScore = cfg.MinEgressStabilityScore
+	plat.MaxCircuitOpenCount = cfg.MaxCircuitOpenCount
+	return plat, nil
 }
 
 func validatePlatformMissAction(raw string) *ServiceError {
@@ -349,6 +418,33 @@ func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *Se
 			return invalidArg(err.Error())
 		}
 	}
+	if err := platform.ValidateNetworkTypeFilters(cfg.NetworkTypeFilters); err != nil {
+		return invalidArg(err.Error())
+	}
+	if err := validateNonNegativeOptionalInt("min_quality_score", cfg.MinQualityScore); err != nil {
+		return err
+	}
+	if err := validateNonNegativeOptionalInt("max_reference_latency_ms", cfg.MaxReferenceLatencyMs); err != nil {
+		return err
+	}
+	if err := validateNonNegativeOptionalInt("min_egress_stability_score", cfg.MinEgressStabilityScore); err != nil {
+		return err
+	}
+	if err := validateNonNegativeOptionalInt("max_circuit_open_count", cfg.MaxCircuitOpenCount); err != nil {
+		return err
+	}
+	if cfg.MinQualityScore != nil && *cfg.MinQualityScore == 0 {
+		cfg.MinQualityScore = nil
+	}
+	if cfg.MaxReferenceLatencyMs != nil && *cfg.MaxReferenceLatencyMs == 0 {
+		cfg.MaxReferenceLatencyMs = nil
+	}
+	if cfg.MinEgressStabilityScore != nil && *cfg.MinEgressStabilityScore == 0 {
+		cfg.MinEgressStabilityScore = nil
+	}
+	if cfg.MaxCircuitOpenCount != nil && *cfg.MaxCircuitOpenCount == 0 {
+		cfg.MaxCircuitOpenCount = nil
+	}
 	if err := validatePlatformEmptyAccountConfig(cfg); err != nil {
 		return err
 	}
@@ -432,6 +528,12 @@ type CreatePlatformRequest struct {
 	RotationInterval                 *string  `json:"rotation_interval"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
+	SubscriptionFilters              []string `json:"subscription_filters"`
+	NetworkTypeFilters               []string `json:"network_type_filters"`
+	MinQualityScore                  *int     `json:"min_quality_score"`
+	MaxReferenceLatencyMs            *int     `json:"max_reference_latency_ms"`
+	MinEgressStabilityScore          *int     `json:"min_egress_stability_score"`
+	MaxCircuitOpenCount              *int     `json:"max_circuit_open_count"`
 	ReverseProxyMissAction           *string  `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior *string  `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
@@ -491,6 +593,16 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	if req.RegionFilters != nil {
 		cfg.RegionFilters = req.RegionFilters
 	}
+	if req.SubscriptionFilters != nil {
+		cfg.SubscriptionFilters = req.SubscriptionFilters
+	}
+	if req.NetworkTypeFilters != nil {
+		cfg.NetworkTypeFilters = req.NetworkTypeFilters
+	}
+	cfg.MinQualityScore = req.MinQualityScore
+	cfg.MaxReferenceLatencyMs = req.MaxReferenceLatencyMs
+	cfg.MinEgressStabilityScore = req.MinEgressStabilityScore
+	cfg.MaxCircuitOpenCount = req.MaxCircuitOpenCount
 	if req.ReverseProxyMissAction != nil {
 		if err := setPlatformMissAction(&cfg, *req.ReverseProxyMissAction); err != nil {
 			return nil, err
@@ -614,6 +726,36 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 		regionFiltersPatched = true
 		cfg.RegionFilters = filters
 	}
+	if filters, ok, err := patch.optionalStringSlice("subscription_filters"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.SubscriptionFilters = filters
+	}
+	if filters, ok, err := patch.optionalStringSlice("network_type_filters"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.NetworkTypeFilters = filters
+	}
+	if value, ok, err := patch.optionalInt("min_quality_score"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.MinQualityScore = &value
+	}
+	if value, ok, err := patch.optionalInt("max_reference_latency_ms"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.MaxReferenceLatencyMs = &value
+	}
+	if value, ok, err := patch.optionalInt("min_egress_stability_score"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.MinEgressStabilityScore = &value
+	}
+	if value, ok, err := patch.optionalInt("max_circuit_open_count"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.MaxCircuitOpenCount = &value
+	}
 
 	if ma, ok, err := patch.optionalString("reverse_proxy_miss_action"); err != nil {
 		return nil, err
@@ -717,8 +859,30 @@ type PreviewFilterRequest struct {
 }
 
 type PlatformSpecFilter struct {
-	RegexFilters  []string `json:"regex_filters"`
-	RegionFilters []string `json:"region_filters"`
+	RegexFilters            []string `json:"regex_filters"`
+	RegionFilters           []string `json:"region_filters"`
+	SubscriptionFilters     []string `json:"subscription_filters"`
+	NetworkTypeFilters      []string `json:"network_type_filters"`
+	MinQualityScore         *int     `json:"min_quality_score"`
+	MaxReferenceLatencyMs   *int     `json:"max_reference_latency_ms"`
+	MinEgressStabilityScore *int     `json:"min_egress_stability_score"`
+	MaxCircuitOpenCount     *int     `json:"max_circuit_open_count"`
+}
+
+type PreviewFilterSummary struct {
+	MatchedNodes           int            `json:"matched_nodes"`
+	HealthyNodes           int            `json:"healthy_nodes"`
+	UniqueEgressIPs        int            `json:"unique_egress_ips"`
+	UniqueHealthyEgressIPs int            `json:"unique_healthy_egress_ips"`
+	ProfiledNodes          int            `json:"profiled_nodes"`
+	UnprofiledNodes        int            `json:"unprofiled_nodes"`
+	NetworkTypeBreakdown   map[string]int `json:"network_type_breakdown"`
+	QualityGradeBreakdown  map[string]int `json:"quality_grade_breakdown"`
+}
+
+type PreviewFilterResponse struct {
+	Items   []NodeSummary        `json:"items"`
+	Summary PreviewFilterSummary `json:"summary"`
 }
 
 // NodeSummary is the API response for a node.
@@ -736,6 +900,22 @@ type NodeSummary struct {
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
+	ProfileState                     string    `json:"profile_state"`
+	EgressNetworkType                string    `json:"egress_network_type"`
+	EgressASN                        *int64    `json:"egress_asn,omitempty"`
+	EgressASNName                    string    `json:"egress_asn_name,omitempty"`
+	EgressASNType                    string    `json:"egress_asn_type,omitempty"`
+	EgressProvider                   string    `json:"egress_provider,omitempty"`
+	EgressProfileSource              string    `json:"egress_profile_source,omitempty"`
+	EgressProfileUpdatedAt           string    `json:"egress_profile_updated_at,omitempty"`
+	QualityScore                     int       `json:"quality_score"`
+	QualityGrade                     string    `json:"quality_grade"`
+	EgressStabilityScore             int       `json:"egress_stability_score"`
+	EgressProbeSuccessCountTotal     int64     `json:"egress_probe_success_count_total"`
+	EgressProbeFailureCountTotal     int64     `json:"egress_probe_failure_count_total"`
+	EgressIPChangeCountTotal         int64     `json:"egress_ip_change_count_total"`
+	LastEgressIPChangeAt             string    `json:"last_egress_ip_change_at,omitempty"`
+	CircuitOpenCountTotal            int64     `json:"circuit_open_count_total"`
 	Tags                             []NodeTag `json:"tags"`
 }
 
@@ -783,15 +963,33 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	if lastAuthority := entry.LastAuthorityLatencyProbeAttempt.Load(); lastAuthority > 0 {
 		ns.LastAuthorityLatencyProbeAttempt = time.Unix(0, lastAuthority).UTC().Format(time.RFC3339Nano)
 	}
-	if s != nil && s.RuntimeCfg != nil {
-		if cfg := s.RuntimeCfg.Load(); cfg != nil {
-			if avgMs, ok := node.AverageEWMAForDomainsMs(entry, cfg.LatencyAuthorities); ok {
-				ns.ReferenceLatencyMs = &avgMs
-			}
-		}
+	if avgMs, ok := entry.ReferenceLatencyMs(s.currentLatencyAuthorities()); ok {
+		ns.ReferenceLatencyMs = &avgMs
 	}
 	if lastEgressAttempt := entry.LastEgressUpdateAttempt.Load(); lastEgressAttempt > 0 {
 		ns.LastEgressUpdateAttempt = time.Unix(0, lastEgressAttempt).UTC().Format(time.RFC3339Nano)
+	}
+	ns.ProfileState = s.resolveNodeProfileState(h, entry)
+	ns.EgressNetworkType = string(entry.GetEgressNetworkType())
+	if asn := entry.GetEgressASN(); asn > 0 {
+		ns.EgressASN = &asn
+	}
+	ns.EgressASNName = entry.GetEgressASNName()
+	ns.EgressASNType = entry.GetEgressASNType()
+	ns.EgressProvider = entry.GetEgressProvider()
+	ns.EgressProfileSource = string(entry.GetEgressProfileSource())
+	if updatedAt := entry.LastEgressProfileUpdated.Load(); updatedAt > 0 {
+		ns.EgressProfileUpdatedAt = time.Unix(0, updatedAt).UTC().Format(time.RFC3339Nano)
+	}
+	ns.QualityScore = int(entry.QualityScore.Load())
+	ns.QualityGrade = string(entry.GetQualityGrade())
+	ns.EgressStabilityScore = entry.EgressStabilityScore()
+	ns.EgressProbeSuccessCountTotal = entry.EgressProbeSuccessCountTotal.Load()
+	ns.EgressProbeFailureCountTotal = entry.EgressProbeFailureCountTotal.Load()
+	ns.EgressIPChangeCountTotal = entry.EgressIPChangeCountTotal.Load()
+	ns.CircuitOpenCountTotal = entry.CircuitOpenCountTotal.Load()
+	if changedAt := entry.LastEgressIPChangeAt.Load(); changedAt > 0 {
+		ns.LastEgressIPChangeAt = time.Unix(0, changedAt).UTC().Format(time.RFC3339Nano)
 	}
 
 	// Build tags.
@@ -821,8 +1019,38 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	return ns
 }
 
+func (s *ControlPlaneService) resolveNodeProfileState(h node.Hash, entry *node.NodeEntry) string {
+	if entry == nil || !entry.HasOutbound() {
+		return "UNAVAILABLE"
+	}
+	if !entry.GetEgressIP().IsValid() {
+		if s != nil && s.ProbeMgr != nil && s.ProbeMgr.IsEgressRunning(h) {
+			return "PROBING_EGRESS"
+		}
+		if entry.LastEgressUpdateAttempt.Load() > 0 {
+			return "PENDING_EGRESS"
+		}
+		return "UNPROBED"
+	}
+	if s != nil && s.ProfileSvc != nil {
+		switch s.ProfileSvc.TaskState(h) {
+		case ipprofile.NodeTaskStateRunning:
+			return "PROFILING"
+		case ipprofile.NodeTaskStateQueued:
+			return "QUEUED_PROFILE"
+		}
+	}
+	if !entry.HasProfile() {
+		return "PENDING_PROFILE"
+	}
+	if entry.GetEgressNetworkType() == model.EgressNetworkTypeUnknown {
+		return "PROFILED_UNKNOWN"
+	}
+	return "PROFILED"
+}
+
 // PreviewFilter returns nodes matching the given filter spec.
-func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSummary, error) {
+func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) (*PreviewFilterResponse, error) {
 	hasPlatformID := req.PlatformID != nil && *req.PlatformID != ""
 	hasPlatformSpec := req.PlatformSpec != nil
 
@@ -832,6 +1060,12 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 
 	var regexFilters []*regexp.Regexp
 	var regionFilters []string
+	var subscriptionFilters []string
+	var networkTypeFilters []string
+	var minQualityScore *int
+	var maxReferenceLatencyMs *int
+	var minEgressStabilityScore *int
+	var maxCircuitOpenCount *int
 
 	if hasPlatformID {
 		plat, ok := s.Pool.GetPlatform(*req.PlatformID)
@@ -840,6 +1074,14 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		}
 		regexFilters = plat.RegexFilters
 		regionFilters = plat.RegionFilters
+		subscriptionFilters = append([]string(nil), plat.SubscriptionFilters...)
+		for _, value := range plat.NetworkTypeFilters {
+			networkTypeFilters = append(networkTypeFilters, string(value))
+		}
+		minQualityScore = plat.MinQualityScore
+		maxReferenceLatencyMs = plat.MaxReferenceLatencyMs
+		minEgressStabilityScore = plat.MinEgressStabilityScore
+		maxCircuitOpenCount = plat.MaxCircuitOpenCount
 	} else {
 		compiled, err := platform.CompileRegexFilters(req.PlatformSpec.RegexFilters)
 		if err != nil {
@@ -850,11 +1092,24 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		if err := platform.ValidateRegionFilters(regionFilters); err != nil {
 			return nil, invalidArg(err.Error())
 		}
+		subscriptionFilters = req.PlatformSpec.SubscriptionFilters
+		networkTypeFilters = req.PlatformSpec.NetworkTypeFilters
+		if err := platform.ValidateNetworkTypeFilters(networkTypeFilters); err != nil {
+			return nil, invalidArg(err.Error())
+		}
+		minQualityScore = req.PlatformSpec.MinQualityScore
+		maxReferenceLatencyMs = req.PlatformSpec.MaxReferenceLatencyMs
+		minEgressStabilityScore = req.PlatformSpec.MinEgressStabilityScore
+		maxCircuitOpenCount = req.PlatformSpec.MaxCircuitOpenCount
 	}
 
 	var subLookup node.SubLookupFunc
 	if s.Pool != nil {
 		subLookup = s.Pool.MakeSubLookup()
+	}
+	allowedSubIDs := make(map[string]struct{}, len(subscriptionFilters))
+	for _, subID := range subscriptionFilters {
+		allowedSubIDs[subID] = struct{}{}
 	}
 	var regionFilterSet map[string]struct{}
 	if len(regionFilters) > 0 {
@@ -864,9 +1119,24 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		}
 	}
 
-	var result []NodeSummary
+	networkTypeSet := make(map[model.EgressNetworkType]struct{}, len(networkTypeFilters))
+	for _, raw := range networkTypeFilters {
+		networkTypeSet[model.NormalizeEgressNetworkType(strings.ToUpper(strings.TrimSpace(raw)))] = struct{}{}
+	}
+	response := &PreviewFilterResponse{
+		Items: []NodeSummary{},
+		Summary: PreviewFilterSummary{
+			NetworkTypeBreakdown:  map[string]int{},
+			QualityGradeBreakdown: map[string]int{},
+		},
+	}
+	seenIPs := make(map[string]struct{})
+	seenHealthyIPs := make(map[string]struct{})
 	s.Pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
-		if !entry.MatchRegexs(regexFilters, subLookup) {
+		if !entry.MatchesSubscriptionFilter(subLookup, allowedSubIDs) {
+			return true
+		}
+		if !entry.MatchRegexsInSubscriptions(regexFilters, subLookup, allowedSubIDs) {
 			return true
 		}
 		if len(regionFilterSet) > 0 {
@@ -881,8 +1151,47 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 				return true
 			}
 		}
-		result = append(result, s.nodeEntryToSummary(h, entry))
+		if len(networkTypeSet) > 0 {
+			if _, ok := networkTypeSet[entry.GetEgressNetworkType()]; !ok {
+				return true
+			}
+		}
+		if minQualityScore != nil && int(entry.QualityScore.Load()) < *minQualityScore {
+			return true
+		}
+		if maxReferenceLatencyMs != nil {
+			if latencyMs, ok := entry.ReferenceLatencyMs(s.currentLatencyAuthorities()); !ok || latencyMs > float64(*maxReferenceLatencyMs) {
+				return true
+			}
+		}
+		if minEgressStabilityScore != nil && entry.EgressStabilityScore() < *minEgressStabilityScore {
+			return true
+		}
+		if maxCircuitOpenCount != nil && int(entry.CircuitOpenCountTotal.Load()) > *maxCircuitOpenCount {
+			return true
+		}
+		summary := s.nodeEntryToSummary(h, entry)
+		response.Items = append(response.Items, summary)
+		response.Summary.MatchedNodes++
+		response.Summary.NetworkTypeBreakdown[summary.EgressNetworkType]++
+		response.Summary.QualityGradeBreakdown[summary.QualityGrade]++
+		if summary.IsHealthy() {
+			response.Summary.HealthyNodes++
+		}
+		if summary.EgressIP != "" {
+			seenIPs[summary.EgressIP] = struct{}{}
+			if summary.IsHealthy() {
+				seenHealthyIPs[summary.EgressIP] = struct{}{}
+			}
+		}
+		if entry.HasProfile() {
+			response.Summary.ProfiledNodes++
+		} else {
+			response.Summary.UnprofiledNodes++
+		}
 		return true
 	})
-	return result, nil
+	response.Summary.UniqueEgressIPs = len(seenIPs)
+	response.Summary.UniqueHealthyEgressIPs = len(seenHealthyIPs)
+	return response, nil
 }

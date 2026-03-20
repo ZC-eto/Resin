@@ -11,6 +11,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/probe"
 	"github.com/Resinat/Resin/internal/proxy"
@@ -57,12 +58,18 @@ type ControlPlaneService struct {
 	Router         *routing.Router
 	GeoIP          *geoip.Service
 	ProbeMgr       *probe.ProbeManager
+	ProfileSvc     *ipprofile.Service
 	MatcherRuntime *proxy.AccountMatcherRuntime
 	RuntimeCfg     *atomic.Pointer[config.RuntimeConfig]
 	EnvCfg         *config.EnvConfig
 
 	configMu      sync.Mutex
 	configVersion int
+}
+
+type SystemTaskStatus struct {
+	Probe     probe.RuntimeStatus     `json:"probe"`
+	IPProfile ipprofile.RuntimeStatus `json:"ip_profile"`
 }
 
 // ------------------------------------------------------------------
@@ -84,6 +91,13 @@ var runtimeConfigAllowedFields = map[string]bool{
 	"max_egress_test_interval":                 true,
 	"latency_test_url":                         true,
 	"latency_authorities":                      true,
+	"ip_profile_local_lookup_enabled":          true,
+	"ip_profile_online_provider":               true,
+	"ip_profile_online_api_key":                true,
+	"ip_profile_online_requests_per_minute":    true,
+	"ip_profile_cache_ttl":                     true,
+	"ip_profile_background_enabled":            true,
+	"ip_profile_refresh_on_egress_change":      true,
 	"p2c_latency_window":                       true,
 	"latency_decay_window":                     true,
 	"cache_flush_interval":                     true,
@@ -98,6 +112,12 @@ var platformPatchAllowedFields = map[string]bool{
 	"rotation_interval":                    true,
 	"regex_filters":                        true,
 	"region_filters":                       true,
+	"subscription_filters":                 true,
+	"network_type_filters":                 true,
+	"min_quality_score":                    true,
+	"max_reference_latency_ms":             true,
+	"min_egress_stability_score":           true,
+	"max_circuit_open_count":               true,
 	"reverse_proxy_miss_action":            true,
 	"reverse_proxy_empty_account_behavior": true,
 	"reverse_proxy_fixed_account_header":   true,
@@ -108,6 +128,7 @@ var subscriptionPatchAllowedFields = map[string]bool{
 	"name":                       true,
 	"url":                        true,
 	"content":                    true,
+	"sources":                    true,
 	"update_interval":            true,
 	"enabled":                    true,
 	"ephemeral":                  true,
@@ -157,7 +178,9 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	defer s.configMu.Unlock()
 
 	// 3. Deep-copy current config → apply patch.
-	newCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	currentCfg := s.RuntimeCfg.Load()
+	oldCfg := copyRuntimeConfig(currentCfg)
+	newCfg := copyRuntimeConfig(currentCfg)
 	if verr := parseRuntimeConfigPatch(patchJSON, newCfg); verr != nil {
 		return nil, verr
 	}
@@ -188,8 +211,38 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	// 6. Atomic swap.
 	s.RuntimeCfg.Store(newCfg)
 	s.configVersion = newVersion
+	if s.ProfileSvc != nil {
+		switch {
+		case shouldForceKnownNodeReprofile(oldCfg, newCfg):
+			s.ProfileSvc.SeedExistingNodes(true)
+		case shouldSeedKnownNodeProfiles(oldCfg, newCfg):
+			s.ProfileSvc.SeedExistingNodes(false)
+		}
+	}
 
 	return newCfg, nil
+}
+
+func shouldForceKnownNodeReprofile(oldCfg, newCfg *config.RuntimeConfig) bool {
+	if oldCfg == nil || newCfg == nil {
+		return false
+	}
+	if oldCfg.IPProfileLocalLookupEnabled != newCfg.IPProfileLocalLookupEnabled {
+		return true
+	}
+	oldProvider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(oldCfg.IPProfileOnlineProvider))
+	newProvider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(newCfg.IPProfileOnlineProvider))
+	if oldProvider != newProvider {
+		return true
+	}
+	return strings.TrimSpace(oldCfg.IPProfileOnlineAPIKey) != strings.TrimSpace(newCfg.IPProfileOnlineAPIKey)
+}
+
+func shouldSeedKnownNodeProfiles(oldCfg, newCfg *config.RuntimeConfig) bool {
+	if oldCfg == nil || newCfg == nil {
+		return false
+	}
+	return !oldCfg.IPProfileBackgroundEnabled && newCfg.IPProfileBackgroundEnabled
 }
 
 func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
@@ -229,6 +282,18 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 	if time.Duration(cfg.MaxEgressTestInterval) < minProbeInterval {
 		return invalidArg("max_egress_test_interval: must be >= 30s")
 	}
+	cfg.IPProfileOnlineAPIKey = strings.TrimSpace(cfg.IPProfileOnlineAPIKey)
+	provider := config.NormalizeIPProfileOnlineProvider(strings.TrimSpace(cfg.IPProfileOnlineProvider))
+	cfg.IPProfileOnlineProvider = string(provider)
+	if cfg.IPProfileOnlineRequestsPerMinute <= 0 {
+		return invalidArg("ip_profile_online_requests_per_minute: must be a positive integer")
+	}
+	if time.Duration(cfg.IPProfileCacheTTL) <= 0 {
+		return invalidArg("ip_profile_cache_ttl: must be positive")
+	}
+	if provider != config.IPProfileOnlineProviderDisabled && strings.TrimSpace(cfg.IPProfileOnlineAPIKey) == "" {
+		return invalidArg("ip_profile_online_api_key: required when online provider is enabled")
+	}
 	if cfg.P2CLatencyWindow < 0 {
 		return invalidArg("p2c_latency_window: must be non-negative")
 	}
@@ -255,4 +320,18 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 		}
 	}
 	return nil
+}
+
+func (s *ControlPlaneService) GetSystemTaskStatus() SystemTaskStatus {
+	status := SystemTaskStatus{}
+	if s == nil {
+		return status
+	}
+	if s.ProbeMgr != nil {
+		status.Probe = s.ProbeMgr.Status()
+	}
+	if s.ProfileSvc != nil {
+		status.IPProfile = s.ProfileSvc.Status()
+	}
+	return status
 }

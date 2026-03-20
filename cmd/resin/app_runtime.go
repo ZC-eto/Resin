@@ -27,6 +27,7 @@ import (
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/service"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/subscription"
 )
 
 type resinApp struct {
@@ -87,7 +88,7 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 		envCfg:     envCfg,
 		runtimeCfg: &atomic.Pointer[config.RuntimeConfig]{},
 	}
-	app.runtimeCfg.Store(loadRuntimeConfig(engine))
+	app.runtimeCfg.Store(loadRuntimeConfig(engine, envCfg))
 	if err := ensureDefaultAccountHeaderRule(engine); err != nil {
 		return nil, err
 	}
@@ -329,6 +330,13 @@ func (a *resinApp) startBackgroundServices() {
 
 	a.metricsManager.Start()
 	log.Println("Metrics manager started (batch 1)")
+	if a.topoRuntime.profileSvc != nil {
+		a.topoRuntime.profileSvc.Start()
+		if runtimeConfigSnapshot(a.runtimeCfg).IPProfileBackgroundEnabled {
+			a.topoRuntime.profileSvc.SeedExistingNodes(false)
+		}
+		log.Println("IP profile service started (batch 1)")
+	}
 
 	// --- Step 8 Batch 2: ProbeManager, RequestLog, LeaseCleaner, EphemeralCleaner ---
 	a.topoRuntime.probeMgr.SetOnProbeEvent(func(kind string) {
@@ -371,8 +379,19 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Scheduler:      a.topoRuntime.scheduler,
 		Router:         a.topoRuntime.router,
 		ProbeMgr:       a.topoRuntime.probeMgr,
+		ProfileSvc:     a.topoRuntime.profileSvc,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
+	}
+	if a.topoRuntime != nil && a.topoRuntime.scheduler != nil {
+		a.topoRuntime.scheduler.SetOnSubRefreshSucceeded(func(sub *subscription.Subscription) {
+			if sub == nil || sub.GetLastError() != "" {
+				return
+			}
+			if err := cpService.AutoFillSubscriptionUnknownNodes(sub.ID); err != nil {
+				log.Printf("[subscription] auto fill unknown nodes for %s failed: %v", sub.ID, err)
+			}
+		})
 	}
 
 	apiSrv := api.NewServerWithAddress(
@@ -539,6 +558,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.topoRuntime.probeMgr.Stop()
 	log.Println("Probe manager stopped")
+
+	if a.topoRuntime.profileSvc != nil {
+		a.topoRuntime.profileSvc.Stop()
+		log.Println("IP profile service stopped")
+	}
 
 	a.geoSvc.Stop()
 	log.Println("GeoIP service stopped")

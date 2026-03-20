@@ -2,16 +2,24 @@ package service
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/netip"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Resinat/Resin/internal/config"
+	"github.com/Resinat/Resin/internal/ipprofile"
+	"github.com/Resinat/Resin/internal/model"
+	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/proxy"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/topology"
 )
 
 type patchHarness struct {
@@ -21,6 +29,12 @@ type patchHarness struct {
 	stateDir   string
 	cacheDir   string
 	closeDB    func()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 func newPatchHarness(t *testing.T) patchHarness {
@@ -136,6 +150,82 @@ func TestPatchRuntimeConfig_HotUpdatePersistsAndSurvivesRestart(t *testing.T) {
 		time.Duration(afterRestart.CacheFlushInterval) != 30*time.Second {
 		t.Fatalf("restart did not preserve patched config: %+v", afterRestart)
 	}
+}
+
+func TestPatchRuntimeConfig_ForceReprofilesKnownNodesWhenProfileStrategyChanges(t *testing.T) {
+	h := newPatchHarness(t)
+
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+	raw := json.RawMessage(`{"type":"ss","server":"1.1.1.1","port":443}`)
+	hash := node.HashFromRawOptions(raw)
+	pool.AddNodeFromSub(hash, raw, "sub-a")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	ip := netip.MustParseAddr("203.0.113.99")
+	entry.SetEgressIP(ip)
+
+	profileSvc := ipprofile.NewService(ipprofile.Config{
+		Pool:   pool,
+		Engine: h.engine,
+		RuntimeSettings: func() ipprofile.RuntimeSettings {
+			cfg := h.runtimeCfg.Load()
+			return ipprofile.RuntimeSettings{
+				LocalLookupEnabled:      cfg.IPProfileLocalLookupEnabled,
+				OnlineProvider:          config.NormalizeIPProfileOnlineProvider(cfg.IPProfileOnlineProvider),
+				OnlineAPIKey:            cfg.IPProfileOnlineAPIKey,
+				OnlineRequestsPerMinute: cfg.IPProfileOnlineRequestsPerMinute,
+				CacheTTL:                time.Duration(cfg.IPProfileCacheTTL),
+				BackgroundEnabled:       cfg.IPProfileBackgroundEnabled,
+				RefreshOnEgressChange:   cfg.IPProfileRefreshOnEgressChange,
+			}
+		},
+		HTTPClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body := `{"status":"ok","203.0.113.99":{"proxy":"no","type":"Residential","provider":"Example ISP","organisation":"Example ISP","asn":"AS64501"}}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			}),
+		},
+	})
+	profileSvc.Start()
+	defer profileSvc.Stop()
+
+	h.cp.ProfileSvc = profileSvc
+	h.runtimeCfg.Store(config.NewDefaultRuntimeConfig())
+
+	seeded, err := profileSvc.LookupProfile(t.Context(), ip, false)
+	if err != nil {
+		t.Fatalf("LookupProfile seed: %v", err)
+	}
+	if seeded.NetworkType != model.EgressNetworkTypeUnknown {
+		t.Fatalf("seed network type: got %q, want %q", seeded.NetworkType, model.EgressNetworkTypeUnknown)
+	}
+
+	_, err = h.cp.PatchRuntimeConfig([]byte(`{
+		"ip_profile_online_provider":"PROXYCHECK",
+		"ip_profile_online_api_key":"demo-key"
+	}`))
+	if err != nil {
+		t.Fatalf("PatchRuntimeConfig: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if entry.GetEgressNetworkType() == model.EgressNetworkTypeResidential {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected node to be reprofiled, got %q", entry.GetEgressNetworkType())
 }
 
 func TestPatchRuntimeConfig_InvalidPatchDoesNotPartiallyApply(t *testing.T) {
