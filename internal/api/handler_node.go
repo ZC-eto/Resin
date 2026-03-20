@@ -231,6 +231,19 @@ func HandleGetNode(cp *service.ControlPlaneService) http.HandlerFunc {
 	}
 }
 
+// HandleExportNode returns a handler for GET /api/v1/nodes/{hash}/export.
+func HandleExportNode(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hash := PathParam(r, "hash")
+		result, err := cp.ExportNode(hash)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
 // HandleProbeEgress returns a handler for POST /api/v1/nodes/{hash}/actions/probe-egress.
 func HandleProbeEgress(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

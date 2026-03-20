@@ -4,6 +4,7 @@ import type {
   Subscription,
   SubscriptionSource,
   SubscriptionCreateInput,
+  SubscriptionFillUnknownNodesResult,
   SubscriptionUpdateInput,
 } from "./types";
 
@@ -39,6 +40,9 @@ function normalizeSubscription(raw: ApiSubscription): Subscription {
     datacenter_node_count: typeof raw.datacenter_node_count === "number" ? raw.datacenter_node_count : 0,
     mobile_node_count: typeof raw.mobile_node_count === "number" ? raw.mobile_node_count : 0,
     unknown_node_count: typeof raw.unknown_node_count === "number" ? raw.unknown_node_count : 0,
+    pending_egress_node_count: typeof raw.pending_egress_node_count === "number" ? raw.pending_egress_node_count : 0,
+    pending_profile_node_count: typeof raw.pending_profile_node_count === "number" ? raw.pending_profile_node_count : 0,
+    profiled_unknown_node_count: typeof raw.profiled_unknown_node_count === "number" ? raw.profiled_unknown_node_count : 0,
     average_quality_score: typeof raw.average_quality_score === "number" ? raw.average_quality_score : undefined,
     last_checked: raw.last_checked || "",
     last_updated: raw.last_updated || "",
@@ -104,6 +108,12 @@ export async function deleteSubscription(id: string): Promise<void> {
 
 export async function refreshSubscription(id: string): Promise<void> {
   await apiRequest<{ status: "ok" }>(`${basePath}/${id}/actions/refresh`, {
+    method: "POST",
+  });
+}
+
+export async function fillSubscriptionUnknownNodes(id: string): Promise<SubscriptionFillUnknownNodesResult> {
+  return apiRequest<SubscriptionFillUnknownNodesResult>(`${basePath}/${id}/actions/fill-unknown-nodes`, {
     method: "POST",
   });
 }

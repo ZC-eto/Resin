@@ -935,6 +935,46 @@ func TestParseGeneralSubscription_Base64WrappedURIs(t *testing.T) {
 	}
 }
 
+func TestParseGeneralSubscription_MultipleBase64BlocksSeparatedByWhitespace(t *testing.T) {
+	firstPlain := "http://user-http:pass-http@1.2.3.4:8080#HTTP%20Node"
+	secondPlain := "socks5://user-s5:pass-s5@5.6.7.8:1081#SOCKS5%20Node"
+	payload := strings.Join([]string{
+		base64.StdEncoding.EncodeToString([]byte(firstPlain)),
+		base64.StdEncoding.EncodeToString([]byte(secondPlain)),
+	}, " \n\t")
+
+	nodes, err := ParseGeneralSubscription([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 parsed nodes, got %d", len(nodes))
+	}
+
+	first := parseNodeRaw(t, nodes[0].RawOptions)
+	second := parseNodeRaw(t, nodes[1].RawOptions)
+	if got := first["type"]; got != "http" {
+		t.Fatalf("expected first type http, got %v", got)
+	}
+	if got := second["type"]; got != "socks" {
+		t.Fatalf("expected second type socks, got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_MultipleBase64BlocksInvalidTokenReturnsSummary(t *testing.T) {
+	valid := base64.StdEncoding.EncodeToString([]byte("ss://YWVzLTEyOC1nY206cGFzcw==@1.1.1.1:8388#SS-Node"))
+	_, err := ParseGeneralSubscription([]byte(valid + " not-a-valid-base64-token"))
+	if err == nil {
+		t.Fatal("expected multi-base64 parse to fail for invalid token")
+	}
+	if !strings.Contains(err.Error(), "multi-base64 parse failed") {
+		t.Fatalf("error should mention multi-base64 parse failure, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "token 2") {
+		t.Fatalf("error should include failing token index, got %v", err)
+	}
+}
+
 func TestParseGeneralSubscription_UnknownFormatReturnsError(t *testing.T) {
 	_, err := ParseGeneralSubscription([]byte("this is not a subscription format"))
 	if err == nil {

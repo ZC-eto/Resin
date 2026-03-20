@@ -3,13 +3,20 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Resinat/Resin/internal/config"
+	"github.com/Resinat/Resin/internal/ipprofile"
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/probe"
+	"github.com/Resinat/Resin/internal/subscription"
+	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
 )
 
@@ -177,5 +184,100 @@ func TestAPIContract_SubscriptionRefreshAction_E2ELocalSource(t *testing.T) {
 	}
 	if got, _ := subBody["last_error"].(string); got != "" {
 		t.Fatalf("local subscription last_error: got %q, want empty", got)
+	}
+}
+
+func TestAPIContract_SubscriptionFillUnknownNodesAction_ReturnsQueuedCounts(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	cp.ProbeMgr = probe.NewProbeManager(probe.ProbeConfig{
+		Pool:        cp.Pool,
+		Concurrency: 1,
+	})
+	defer cp.ProbeMgr.Stop()
+	cp.ProfileSvc = ipprofile.NewService(ipprofile.Config{
+		Pool:                cp.Pool,
+		BackgroundBatchSize: 4,
+		RuntimeSettings: func() ipprofile.RuntimeSettings {
+			return ipprofile.RuntimeSettings{
+				OnlineProvider:          config.IPProfileOnlineProviderProxycheck,
+				OnlineAPIKey:            "test-key",
+				OnlineRequestsPerMinute: 60,
+				CacheTTL:                time.Hour,
+				BackgroundEnabled:       true,
+				RefreshOnEgressChange:   true,
+			}
+		},
+	})
+
+	const pendingEgressRaw = `{"type":"shadowsocks","server":"1.1.1.1","server_port":443}`
+	const pendingProfileRaw = `{"type":"shadowsocks","server":"2.2.2.2","server_port":443}`
+	const unavailableRaw = `{"type":"shadowsocks","server":"3.3.3.3","server_port":443}`
+
+	addNodeForNodeListTest(t, cp, sub, pendingEgressRaw, "")
+	addNodeForNodeListTest(t, cp, sub, pendingProfileRaw, "203.0.113.88")
+	addNodeForNodeListTest(t, cp, sub, unavailableRaw, "")
+
+	pendingEgressHash := node.HashFromRawOptions([]byte(pendingEgressRaw))
+	pendingProfileHash := node.HashFromRawOptions([]byte(pendingProfileRaw))
+	unavailableHash := node.HashFromRawOptions([]byte(unavailableRaw))
+
+	pendingEgressEntry, ok := cp.Pool.GetEntry(pendingEgressHash)
+	if !ok {
+		t.Fatalf("pending egress node %s missing", pendingEgressHash.Hex())
+	}
+	pendingProfileEntry, ok := cp.Pool.GetEntry(pendingProfileHash)
+	if !ok {
+		t.Fatalf("pending profile node %s missing", pendingProfileHash.Hex())
+	}
+	unavailableEntry, ok := cp.Pool.GetEntry(unavailableHash)
+	if !ok {
+		t.Fatalf("unavailable node %s missing", unavailableHash.Hex())
+	}
+
+	noopOutbound := testutil.NewNoopOutbound()
+	pendingEgressEntry.Outbound.Store(&noopOutbound)
+	pendingProfileEntry.Outbound.Store(&noopOutbound)
+	pendingProfileEntry.SetEgressIP(netip.MustParseAddr("203.0.113.88"))
+	unavailableEntry.SetEgressProfile(node.NodeProfile{
+		IP:                 netip.MustParseAddr("203.0.113.99"),
+		NetworkType:        model.EgressNetworkTypeUnknown,
+		Source:             model.EgressProfileSourceLocal,
+		ProfileUpdatedAtNs: time.Now().UnixNano(),
+	})
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/"+sub.ID+"/actions/fill-unknown-nodes",
+		nil,
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fill unknown nodes status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body := decodeJSONMap(t, rec)
+	if body["matched"] != float64(3) {
+		t.Fatalf("matched: got %v, want 3", body["matched"])
+	}
+	if body["queued_egress"] != float64(1) {
+		t.Fatalf("queued_egress: got %v, want 1", body["queued_egress"])
+	}
+	if body["queued_profile"] != float64(1) {
+		t.Fatalf("queued_profile: got %v, want 1", body["queued_profile"])
+	}
+	if body["skipped"] != float64(1) {
+		t.Fatalf("skipped: got %v, want 1", body["skipped"])
+	}
+	if body["failed"] != float64(0) {
+		t.Fatalf("failed: got %v, want 0", body["failed"])
+	}
+	if state := cp.ProfileSvc.TaskState(pendingProfileHash); state != ipprofile.NodeTaskStateQueued {
+		t.Fatalf("pending profile task state = %s, want %s", state, ipprofile.NodeTaskStateQueued)
 	}
 }

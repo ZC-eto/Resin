@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Download, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
@@ -13,15 +13,15 @@ import { Select } from "../../components/ui/Select";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
+import { ApiError } from "../../lib/api-client";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency, reprofileNode, reprofileNodes } from "./api";
-import type { NodeSummary } from "./types";
+import { exportNode, getNode, listNodes, probeEgress, probeLatency, reprofileNode, reprofileNodes } from "./api";
 import { getAllRegions, getRegionName } from "./regions";
-import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
+import type { NodeExportResponse, NodeListFilters, NodeSortBy, NodeSummary, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error";
@@ -340,6 +340,9 @@ export function NodesPage() {
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
   const [selectedNodeHashes, setSelectedNodeHashes] = useState<string[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportResult, setExportResult] = useState<NodeExportResponse | null>(null);
+  const [exportNodeLabel, setExportNodeLabel] = useState("");
   const { toasts, showToast, dismissToast } = useToast();
 
   const queryClient = useQueryClient();
@@ -414,6 +417,18 @@ export function NodesPage() {
 
   const detailNode = nodeDetailQuery.data ?? selectedNode;
   const drawerVisible = drawerOpen && Boolean(detailNode);
+
+  const copyText = async (value: string, successMessage: string) => {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(value);
+      showToast("success", successMessage);
+    } catch {
+      showToast("error", t("当前浏览器无法直接复制，请手动复制文本。"));
+    }
+  };
 
   useEffect(() => {
     if (!drawerVisible) {
@@ -497,6 +512,25 @@ export function NodesPage() {
     },
   });
 
+  const exportNodeMutation = useMutation({
+    mutationFn: async (node: NodeSummary) => {
+      const result = await exportNode(node.node_hash);
+      return { node, result };
+    },
+    onSuccess: ({ node, result }) => {
+      setExportResult(result);
+      setExportNodeLabel(firstTag(node));
+      setExportModalOpen(true);
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        showToast("error", t("当前节点协议不支持导出为通用 HTTP/SOCKS URI"));
+        return;
+      }
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const batchReprofileMutation = useMutation({
     mutationFn: async (hashes: string[]) => reprofileNodes(hashes),
     onSuccess: async (result) => {
@@ -521,6 +555,10 @@ export function NodesPage() {
 
   const runReprofile = async (hash: string) => {
     await reprofileMutation.mutateAsync(hash);
+  };
+
+  const runExport = async (node: NodeSummary) => {
+    await exportNodeMutation.mutateAsync(node);
   };
 
   const toggleHashSelection = (hash: string, checked: boolean) => {
@@ -772,9 +810,18 @@ export function NodesPage() {
               variant="ghost"
               title={t("重新检测网络类型")}
               onClick={() => void runReprofile(node.node_hash)}
-              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
             >
               <Sparkles size={14} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("导出代理")}
+              onClick={() => void runExport(node)}
+              disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
+            >
+              <Download size={14} />
             </Button>
           </div>
         );
@@ -1278,6 +1325,19 @@ export function NodesPage() {
                 <div className="platform-ops-list">
                   <div className="platform-op-item">
                     <div className="platform-op-copy">
+                      <h5>{t("导出通用代理")}</h5>
+                      <p className="platform-op-hint">{t("仅 HTTP / HTTPS / SOCKS 节点支持导出通用代理 URI。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void runExport(detailNode)}
+                      disabled={probeEgressMutation.isPending || probeLatencyMutation.isPending || reprofileMutation.isPending || exportNodeMutation.isPending}
+                    >
+                      {exportNodeMutation.isPending ? t("导出中...") : t("导出代理 URI")}
+                    </Button>
+                  </div>
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
                       <h5>{t("出口探测")}</h5>
                       <p className="platform-op-hint">{t("检查节点当前出口 IP。")}</p>
                     </div>
@@ -1317,6 +1377,37 @@ export function NodesPage() {
                   </div>
                 </div>
               </section>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {exportModalOpen && exportResult ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("节点导出")}>
+          <Card className="modal-card">
+            <div className="modal-header">
+              <div>
+                <h3>{t("节点导出")}</h3>
+                <p className="muted">{exportNodeLabel || exportResult.node_hash}</p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setExportModalOpen(false)}>
+                <X size={16} />
+              </Button>
+            </div>
+
+            <div className="platform-ops-list" style={{ marginTop: "1rem" }}>
+              {exportResult.exports.map((item) => (
+                <div key={`${item.scheme}:${item.uri}`} className="platform-op-item">
+                  <div className="platform-op-copy" style={{ minWidth: 0 }}>
+                    <h5>{item.label}</h5>
+                    <p className="platform-op-hint">{t("直接复制到浏览器、脚本或外部服务里使用。")}</p>
+                    <Input value={item.uri} readOnly style={{ marginTop: "0.5rem" }} />
+                  </div>
+                  <Button variant="secondary" onClick={() => void copyText(item.uri, t("代理地址已复制"))}>
+                    {t("复制")}
+                  </Button>
+                </div>
+              ))}
             </div>
           </Card>
         </div>

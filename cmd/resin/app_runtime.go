@@ -27,6 +27,7 @@ import (
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/service"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/subscription"
 )
 
 type resinApp struct {
@@ -381,6 +382,16 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		ProfileSvc:     a.topoRuntime.profileSvc,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
+	}
+	if a.topoRuntime != nil && a.topoRuntime.scheduler != nil {
+		a.topoRuntime.scheduler.SetOnSubRefreshSucceeded(func(sub *subscription.Subscription) {
+			if sub == nil || sub.GetLastError() != "" {
+				return
+			}
+			if err := cpService.AutoFillSubscriptionUnknownNodes(sub.ID); err != nil {
+				log.Printf("[subscription] auto fill unknown nodes for %s failed: %v", sub.ID, err)
+			}
+		})
 	}
 
 	apiSrv := api.NewServerWithAddress(

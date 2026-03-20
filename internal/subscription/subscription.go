@@ -132,9 +132,10 @@ type Subscription struct {
 
 	// Runtime-only fields (NOT persisted). Atomic for lock-free reads
 	// from the scheduler's due-check loop.
-	LastCheckedNs atomic.Int64
-	LastUpdatedNs atomic.Int64
-	LastError     atomic.Pointer[string]
+	LastCheckedNs       atomic.Int64
+	LastUpdatedNs       atomic.Int64
+	LastRefreshApplySeq atomic.Int64
+	LastError           atomic.Pointer[string]
 
 	// managedNodes is the subscription's node view: Hash → ManagedNode.
 	// Swapped atomically on subscription update.

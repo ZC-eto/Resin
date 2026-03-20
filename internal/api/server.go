@@ -102,6 +102,7 @@ func NewServerWithAddress(
 		authed.Handle("PATCH /api/v1/subscriptions/{id}", HandleUpdateSubscription(cp))
 		authed.Handle("DELETE /api/v1/subscriptions/{id}", HandleDeleteSubscription(cp))
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/refresh", HandleRefreshSubscription(cp))
+		authed.Handle("POST /api/v1/subscriptions/{id}/actions/fill-unknown-nodes", HandleFillSubscriptionUnknownNodes(cp))
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/cleanup-circuit-open-nodes", HandleCleanupSubscriptionCircuitOpenNodes(cp))
 
 		// Account header rules.
@@ -115,6 +116,7 @@ func NewServerWithAddress(
 		authed.Handle("GET /api/v1/nodes", HandleListNodes(cp))
 		authed.Handle("POST /api/v1/nodes/actions/reprofile", HandleBatchReprofileNodes(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}", HandleGetNode(cp))
+		authed.Handle("GET /api/v1/nodes/{hash}/export", HandleExportNode(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/probe-egress", HandleProbeEgress(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/probe-latency", HandleProbeLatency(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/reprofile", HandleReprofileNode(cp))

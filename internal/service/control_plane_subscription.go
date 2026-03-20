@@ -22,27 +22,30 @@ import (
 
 // SubscriptionResponse is the API response for a subscription.
 type SubscriptionResponse struct {
-	ID                      string                       `json:"id"`
-	Name                    string                       `json:"name"`
-	SourceType              string                       `json:"source_type"`
-	URL                     string                       `json:"url"`
-	Content                 string                       `json:"content"`
-	Sources                 []SubscriptionSourceResponse `json:"sources"`
-	UpdateInterval          string                       `json:"update_interval"`
-	NodeCount               int                          `json:"node_count"`
-	HealthyNodeCount        int                          `json:"healthy_node_count"`
-	ResidentialNodeCount    int                          `json:"residential_node_count"`
-	DatacenterNodeCount     int                          `json:"datacenter_node_count"`
-	MobileNodeCount         int                          `json:"mobile_node_count"`
-	UnknownNodeCount        int                          `json:"unknown_node_count"`
-	AverageQualityScore     *float64                     `json:"average_quality_score,omitempty"`
-	Ephemeral               bool                         `json:"ephemeral"`
-	EphemeralNodeEvictDelay string                       `json:"ephemeral_node_evict_delay"`
-	Enabled                 bool                         `json:"enabled"`
-	CreatedAt               string                       `json:"created_at"`
-	LastChecked             string                       `json:"last_checked,omitempty"`
-	LastUpdated             string                       `json:"last_updated,omitempty"`
-	LastError               string                       `json:"last_error,omitempty"`
+	ID                       string                       `json:"id"`
+	Name                     string                       `json:"name"`
+	SourceType               string                       `json:"source_type"`
+	URL                      string                       `json:"url"`
+	Content                  string                       `json:"content"`
+	Sources                  []SubscriptionSourceResponse `json:"sources"`
+	UpdateInterval           string                       `json:"update_interval"`
+	NodeCount                int                          `json:"node_count"`
+	HealthyNodeCount         int                          `json:"healthy_node_count"`
+	ResidentialNodeCount     int                          `json:"residential_node_count"`
+	DatacenterNodeCount      int                          `json:"datacenter_node_count"`
+	MobileNodeCount          int                          `json:"mobile_node_count"`
+	UnknownNodeCount         int                          `json:"unknown_node_count"`
+	PendingEgressNodeCount   int                          `json:"pending_egress_node_count"`
+	PendingProfileNodeCount  int                          `json:"pending_profile_node_count"`
+	ProfiledUnknownNodeCount int                          `json:"profiled_unknown_node_count"`
+	AverageQualityScore      *float64                     `json:"average_quality_score,omitempty"`
+	Ephemeral                bool                         `json:"ephemeral"`
+	EphemeralNodeEvictDelay  string                       `json:"ephemeral_node_evict_delay"`
+	Enabled                  bool                         `json:"enabled"`
+	CreatedAt                string                       `json:"created_at"`
+	LastChecked              string                       `json:"last_checked,omitempty"`
+	LastUpdated              string                       `json:"last_updated,omitempty"`
+	LastError                string                       `json:"last_error,omitempty"`
 }
 
 type SubscriptionSourceResponse struct {
@@ -63,13 +66,29 @@ type SubscriptionSourceInput struct {
 	Enabled *bool  `json:"enabled"`
 }
 
+type SubscriptionFillUnknownNodesResult struct {
+	Matched       int `json:"matched"`
+	QueuedEgress  int `json:"queued_egress"`
+	QueuedProfile int `json:"queued_profile"`
+	Skipped       int `json:"skipped"`
+	Failed        int `json:"failed"`
+}
+
+type subscriptionUnknownNodeCounts struct {
+	pendingEgress   int
+	pendingProfile  int
+	profiledUnknown int
+}
+
 func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) SubscriptionResponse {
 	nodeCount := 0
 	healthyNodeCount := 0
 	residentialNodeCount := 0
 	datacenterNodeCount := 0
 	mobileNodeCount := 0
-	unknownNodeCount := 0
+	pendingEgressNodeCount := 0
+	pendingProfileNodeCount := 0
+	profiledUnknownNodeCount := 0
 	var qualitySum int
 	var qualityCount int
 	if managed := sub.ManagedNodes(); managed != nil {
@@ -84,6 +103,11 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 					healthyNodeCount++
 				}
 				if ok {
+					unknownCounts := s.classifySubscriptionUnknownNodeCounts(h, entry)
+					pendingEgressNodeCount += unknownCounts.pendingEgress
+					pendingProfileNodeCount += unknownCounts.pendingProfile
+					profiledUnknownNodeCount += unknownCounts.profiledUnknown
+
 					switch entry.GetEgressNetworkType() {
 					case model.EgressNetworkTypeResidential:
 						residentialNodeCount++
@@ -91,8 +115,6 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 						datacenterNodeCount++
 					case model.EgressNetworkTypeMobile:
 						mobileNodeCount++
-					default:
-						unknownNodeCount++
 					}
 					if entry.HasProfile() {
 						qualitySum += int(entry.QualityScore.Load())
@@ -111,24 +133,27 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 	}
 
 	resp := SubscriptionResponse{
-		ID:                      sub.ID,
-		Name:                    sub.Name(),
-		SourceType:              sub.SourceType(),
-		URL:                     sub.URL(),
-		Content:                 sub.Content(),
-		Sources:                 toSubscriptionSourceResponses(sub.Sources()),
-		UpdateInterval:          time.Duration(sub.UpdateIntervalNs()).String(),
-		NodeCount:               nodeCount,
-		HealthyNodeCount:        healthyNodeCount,
-		ResidentialNodeCount:    residentialNodeCount,
-		DatacenterNodeCount:     datacenterNodeCount,
-		MobileNodeCount:         mobileNodeCount,
-		UnknownNodeCount:        unknownNodeCount,
-		AverageQualityScore:     averageQualityScore,
-		Ephemeral:               sub.Ephemeral(),
-		EphemeralNodeEvictDelay: time.Duration(sub.EphemeralNodeEvictDelayNs()).String(),
-		Enabled:                 sub.Enabled(),
-		CreatedAt:               time.Unix(0, sub.CreatedAtNs).UTC().Format(time.RFC3339Nano),
+		ID:                       sub.ID,
+		Name:                     sub.Name(),
+		SourceType:               sub.SourceType(),
+		URL:                      sub.URL(),
+		Content:                  sub.Content(),
+		Sources:                  toSubscriptionSourceResponses(sub.Sources()),
+		UpdateInterval:           time.Duration(sub.UpdateIntervalNs()).String(),
+		NodeCount:                nodeCount,
+		HealthyNodeCount:         healthyNodeCount,
+		ResidentialNodeCount:     residentialNodeCount,
+		DatacenterNodeCount:      datacenterNodeCount,
+		MobileNodeCount:          mobileNodeCount,
+		UnknownNodeCount:         pendingEgressNodeCount + pendingProfileNodeCount + profiledUnknownNodeCount,
+		PendingEgressNodeCount:   pendingEgressNodeCount,
+		PendingProfileNodeCount:  pendingProfileNodeCount,
+		ProfiledUnknownNodeCount: profiledUnknownNodeCount,
+		AverageQualityScore:      averageQualityScore,
+		Ephemeral:                sub.Ephemeral(),
+		EphemeralNodeEvictDelay:  time.Duration(sub.EphemeralNodeEvictDelayNs()).String(),
+		Enabled:                  sub.Enabled(),
+		CreatedAt:                time.Unix(0, sub.CreatedAtNs).UTC().Format(time.RFC3339Nano),
 	}
 	if lc := sub.LastCheckedNs.Load(); lc > 0 {
 		resp.LastChecked = time.Unix(0, lc).UTC().Format(time.RFC3339Nano)
@@ -138,6 +163,37 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 	}
 	resp.LastError = sub.GetLastError()
 	return resp
+}
+
+func (s *ControlPlaneService) classifySubscriptionUnknownNodeCounts(
+	h node.Hash,
+	entry *node.NodeEntry,
+) subscriptionUnknownNodeCounts {
+	if entry == nil {
+		return subscriptionUnknownNodeCounts{}
+	}
+	switch s.resolveNodeProfileState(h, entry) {
+	case "UNPROBED", "PENDING_EGRESS", "PROBING_EGRESS":
+		return subscriptionUnknownNodeCounts{pendingEgress: 1}
+	case "PENDING_PROFILE", "QUEUED_PROFILE", "PROFILING":
+		return subscriptionUnknownNodeCounts{pendingProfile: 1}
+	case "PROFILED_UNKNOWN":
+		return subscriptionUnknownNodeCounts{profiledUnknown: 1}
+	default:
+		return subscriptionUnknownNodeCounts{}
+	}
+}
+
+func shouldAutoQueueUnknownProfile(entry *node.NodeEntry) bool {
+	if entry == nil {
+		return false
+	}
+	switch entry.GetEgressProfileSource() {
+	case model.EgressProfileSourceOnline, model.EgressProfileSourceLocalPlusOnline:
+		return false
+	default:
+		return true
+	}
 }
 
 // ListSubscriptions returns all subscriptions, optionally filtered by enabled.
@@ -695,6 +751,111 @@ func (s *ControlPlaneService) RefreshSubscription(id string) error {
 	}
 	s.Scheduler.UpdateSubscription(sub)
 	return nil
+}
+
+func (s *ControlPlaneService) AutoFillSubscriptionUnknownNodes(id string) error {
+	_, err := s.fillSubscriptionUnknownNodes(id, false)
+	return err
+}
+
+func (s *ControlPlaneService) FillSubscriptionUnknownNodes(id string) (*SubscriptionFillUnknownNodesResult, error) {
+	return s.fillSubscriptionUnknownNodes(id, true)
+}
+
+func (s *ControlPlaneService) fillSubscriptionUnknownNodes(
+	id string,
+	manual bool,
+) (*SubscriptionFillUnknownNodesResult, error) {
+	if s == nil || s.SubMgr == nil || s.Pool == nil {
+		return nil, internal("subscription unknown-node repair unavailable", nil)
+	}
+
+	sub := s.SubMgr.Lookup(id)
+	if sub == nil {
+		return nil, notFound("subscription not found")
+	}
+
+	result := &SubscriptionFillUnknownNodesResult{}
+	egressQueue := make([]node.Hash, 0, 32)
+	profileQueue := make([]node.Hash, 0, 32)
+	var fillErr error
+
+	sub.WithOpLock(func() {
+		lockedSub := s.SubMgr.Lookup(id)
+		if lockedSub == nil {
+			fillErr = notFound("subscription not found")
+			return
+		}
+
+		managed := lockedSub.ManagedNodes()
+		if managed == nil {
+			return
+		}
+
+		managed.RangeNodes(func(h node.Hash, managedNode subscription.ManagedNode) bool {
+			if managedNode.Evicted {
+				result.Matched++
+				result.Skipped++
+				return true
+			}
+
+			entry, ok := s.Pool.GetEntry(h)
+			if !ok || entry == nil {
+				result.Matched++
+				result.Skipped++
+				return true
+			}
+			if !entry.HasOutbound() {
+				result.Matched++
+				result.Skipped++
+				return true
+			}
+
+			switch s.resolveNodeProfileState(h, entry) {
+			case "UNPROBED", "PENDING_EGRESS", "PROBING_EGRESS":
+				result.Matched++
+				egressQueue = append(egressQueue, h)
+			case "PENDING_PROFILE", "QUEUED_PROFILE", "PROFILING":
+				result.Matched++
+				profileQueue = append(profileQueue, h)
+			case "PROFILED_UNKNOWN":
+				result.Matched++
+				if manual || shouldAutoQueueUnknownProfile(entry) {
+					profileQueue = append(profileQueue, h)
+				} else {
+					result.Skipped++
+				}
+			}
+			return true
+		})
+	})
+	if fillErr != nil {
+		return nil, fillErr
+	}
+
+	for _, h := range egressQueue {
+		if s.ProbeMgr == nil {
+			result.Failed++
+			continue
+		}
+		s.ProbeMgr.TriggerImmediateEgressProbe(h)
+		result.QueuedEgress++
+	}
+
+	for _, h := range profileQueue {
+		if s.ProfileSvc == nil {
+			result.Failed++
+			continue
+		}
+		if manual {
+			s.ProfileSvc.EnqueueForce(h)
+		} else {
+			s.ProfileSvc.Enqueue(h)
+		}
+		result.QueuedProfile++
+	}
+
+	return result, nil
 }
 
 // CleanupSubscriptionCircuitOpenNodes removes problematic nodes from a subscription.

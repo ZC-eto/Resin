@@ -87,6 +87,14 @@ func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 		return attempt.nodes, nil
 	}
 
+	var multiBase64Err error
+	if multiNodes, ok, err := parseMultipleBase64Blocks(normalized); ok {
+		if err == nil {
+			return multiNodes, nil
+		}
+		multiBase64Err = err
+	}
+
 	if decodedText, ok := tryDecodeBase64ToText(normalized); ok {
 		decodedAttempt, decodedErr := parseSubscriptionContent([]byte(decodedText))
 		if decodedErr != nil {
@@ -97,7 +105,46 @@ func (p *GeneralSubscriptionParser) Parse(data []byte) ([]ParsedNode, error) {
 		}
 	}
 
+	if multiBase64Err != nil {
+		return nil, multiBase64Err
+	}
+
 	return nil, fmt.Errorf("subscription: unsupported format or no supported nodes found")
+}
+
+func parseMultipleBase64Blocks(data []byte) ([]ParsedNode, bool, error) {
+	tokens := bytes.Fields(data)
+	if len(tokens) <= 1 {
+		return nil, false, nil
+	}
+
+	nodes := make([]ParsedNode, 0, len(tokens)*4)
+	failures := make([]string, 0, len(tokens))
+	for index, token := range tokens {
+		decodedText, ok := tryDecodeBase64ToText(token)
+		if !ok {
+			failures = append(failures, fmt.Sprintf("token %d: invalid base64 block", index+1))
+			continue
+		}
+		attempt, err := parseSubscriptionContent([]byte(decodedText))
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("token %d: %v", index+1, err))
+			continue
+		}
+		if !attempt.recognized {
+			failures = append(failures, fmt.Sprintf("token %d: unsupported format or no supported nodes found", index+1))
+			continue
+		}
+		nodes = append(nodes, attempt.nodes...)
+	}
+
+	if len(failures) > 0 {
+		return nil, true, fmt.Errorf("subscription: multi-base64 parse failed: %s", strings.Join(failures, "; "))
+	}
+	if len(nodes) == 0 {
+		return nil, true, fmt.Errorf("subscription: unsupported format or no supported nodes found")
+	}
+	return nodes, true, nil
 }
 
 func parseSubscriptionContent(data []byte) (parseAttempt, error) {

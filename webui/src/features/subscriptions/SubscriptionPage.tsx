@@ -24,6 +24,7 @@ import {
   cleanupSubscriptionCircuitOpenNodes,
   createSubscription,
   deleteSubscription,
+  fillSubscriptionUnknownNodes,
   listSubscriptions,
   refreshSubscription,
   updateSubscription,
@@ -201,6 +202,7 @@ export function SubscriptionPage() {
   const subscriptionContentPlaceholder = [
     t("支持格式："),
     t("sing-box / Clash|Mihomo / URI（vmess:// vless:// trojan:// ss:// ...）或他们的 base64 格式"),
+    t("同一个本地来源里可用空格、换行或 Tab 分隔多个 Base64 订阅块。"),
     "",
     t("HTTP/HTTPS/SOCKS 示例："),
     t("1.2.3.4:8080:user:pass （HTTP 认证代理）"),
@@ -410,6 +412,31 @@ export function SubscriptionPage() {
     },
   });
 
+  const fillUnknownNodesMutation = useMutation({
+    mutationFn: async (subscription: Subscription) => {
+      const result = await fillSubscriptionUnknownNodes(subscription.id);
+      return { subscription, result };
+    },
+    onSuccess: async ({ subscription, result }) => {
+      await invalidateSubscriptionsAndNodes();
+      showToast("success", t("订阅 {{name}} 已加入补齐任务：出口 {{egress}} / 画像 {{profile}}", {
+        name: subscription.name,
+        egress: result.queued_egress,
+        profile: result.queued_profile,
+      }));
+      if (result.skipped > 0 || result.failed > 0) {
+        showToast("success", t("补齐结果：匹配 {{matched}}，跳过 {{skipped}}，失败 {{failed}}", {
+          matched: result.matched,
+          skipped: result.skipped,
+          failed: result.failed,
+        }));
+      }
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const onCreateSubmit = createForm.handleSubmit(async (values) => {
     const payload = {
       name: values.name.trim(),
@@ -450,6 +477,10 @@ export function SubscriptionPage() {
   const handleRefresh = useCallback(async (subscription: Subscription) => {
     await refreshSubscriptionMutateAsync(subscription);
   }, [refreshSubscriptionMutateAsync]);
+
+  const handleFillUnknownNodes = useCallback(async (subscription: Subscription) => {
+    await fillUnknownNodesMutation.mutateAsync(subscription);
+  }, [fillUnknownNodesMutation]);
 
   const changePageSize = (next: number) => {
     setPageSize(next);
@@ -497,8 +528,8 @@ export function SubscriptionPage() {
           const avg = typeof s.average_quality_score === "number" ? s.average_quality_score.toFixed(0) : "-";
           return (
             <div className="logs-cell-stack">
-              <span>{`${t("住宅")} ${s.residential_node_count} / ${t("机房")} ${s.datacenter_node_count}`}</span>
-              <small>{`${t("未知")} ${s.unknown_node_count} / Avg ${avg}`}</small>
+              <span>{`${t("住宅")} ${s.residential_node_count} / ${t("机房")} ${s.datacenter_node_count} / ${t("移动")} ${s.mobile_node_count}`}</span>
+              <small>{`${t("待出口")} ${s.pending_egress_node_count} / ${t("待画像")} ${s.pending_profile_node_count} / ${t("仍未知")} ${s.profiled_unknown_node_count} / Avg ${avg}`}</small>
             </div>
           );
         },
@@ -550,6 +581,15 @@ export function SubscriptionPage() {
               <Button
                 size="sm"
                 variant="ghost"
+                onClick={() => void handleFillUnknownNodes(s)}
+                disabled={fillUnknownNodesMutation.isPending}
+                title={t("补齐未知")}
+              >
+                <Sparkles size={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
                 onClick={() => void handleRefresh(s)}
                 disabled={isRefreshPending}
                 title={t("刷新")}
@@ -571,7 +611,7 @@ export function SubscriptionPage() {
         },
       }),
     ],
-    [col, handleDelete, handleRefresh, isDeletePending, isRefreshPending, openDrawer, t]
+    [col, fillUnknownNodesMutation.isPending, handleDelete, handleFillUnknownNodes, handleRefresh, isDeletePending, isRefreshPending, openDrawer, t]
   );
 
   return (
@@ -940,6 +980,20 @@ export function SubscriptionPage() {
                 </div>
 
                 <div className="platform-ops-list">
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("补齐未知节点")}</h5>
+                      <p className="platform-op-hint">{t("优先补出口 IP，再把可识别的未知节点加入画像队列。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void handleFillUnknownNodes(selectedSubscription)}
+                      disabled={fillUnknownNodesMutation.isPending}
+                    >
+                      {fillUnknownNodesMutation.isPending ? t("补齐中...") : t("立即补齐")}
+                    </Button>
+                  </div>
+
                   <div className="platform-op-item">
                     <div className="platform-op-copy">
                       <h5>{t("手动刷新")}</h5>

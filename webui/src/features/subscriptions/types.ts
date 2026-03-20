@@ -21,6 +21,9 @@ export type Subscription = {
   datacenter_node_count: number;
   mobile_node_count: number;
   unknown_node_count: number;
+  pending_egress_node_count: number;
+  pending_profile_node_count: number;
+  profiled_unknown_node_count: number;
   average_quality_score?: number;
   ephemeral: boolean;
   ephemeral_node_evict_delay: string;
@@ -29,6 +32,14 @@ export type Subscription = {
   last_checked?: string;
   last_updated?: string;
   last_error?: string;
+};
+
+export type SubscriptionFillUnknownNodesResult = {
+  matched: number;
+  queued_egress: number;
+  queued_profile: number;
+  skipped: number;
+  failed: number;
 };
 
 export type PageResponse<T> = {

@@ -1,5 +1,6 @@
 import { apiRequest } from "../../lib/api-client";
 import type {
+  NodeExportResponse,
   EgressProbeResult,
   LatencyProbeResult,
   NodeReprofileBatchResult,
@@ -133,6 +134,10 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
 export async function getNode(hash: string): Promise<NodeSummary> {
   const data = await apiRequest<ApiNodeSummary>(`${basePath}/${hash}`);
   return normalizeNode(data);
+}
+
+export async function exportNode(hash: string): Promise<NodeExportResponse> {
+  return apiRequest<NodeExportResponse>(`${basePath}/${hash}/export`);
 }
 
 export async function probeEgress(hash: string): Promise<EgressProbeResult> {

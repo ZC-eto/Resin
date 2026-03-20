@@ -88,3 +88,14 @@ export type NodeReprofileBatchResult = {
   accepted: number;
   failed: string[];
 };
+
+export type NodeExportItem = {
+  label: string;
+  scheme: string;
+  uri: string;
+};
+
+export type NodeExportResponse = {
+  node_hash: string;
+  exports: NodeExportItem[];
+};

@@ -252,3 +252,100 @@ func TestHandleProbeEgress_ReturnsRegion(t *testing.T) {
 		t.Fatalf("region: got %v, want %q", body["region"], "jp")
 	}
 }
+
+func TestHandleExportNode_ReturnsHTTPAndHTTPSProxyURIs(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	const rawHTTP = `{"type":"http","server":"1.2.3.4","server_port":8080,"username":"user-http","password":"pass-http"}`
+	const rawHTTPS = `{"type":"http","server":"example.com","server_port":8443,"username":"user-https","password":"pass-https","tls":{"enabled":true,"server_name":"tls.example.com","insecure":true}}`
+
+	addNodeForNodeListTest(t, cp, sub, rawHTTP, "")
+	addNodeForNodeListTest(t, cp, sub, rawHTTPS, "")
+
+	httpHash := node.HashFromRawOptions([]byte(rawHTTP)).Hex()
+	httpsHash := node.HashFromRawOptions([]byte(rawHTTPS)).Hex()
+
+	httpRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+httpHash+"/export", nil, true)
+	if httpRec.Code != http.StatusOK {
+		t.Fatalf("http export status: got %d, want %d, body=%s", httpRec.Code, http.StatusOK, httpRec.Body.String())
+	}
+	httpBody := decodeJSONMap(t, httpRec)
+	httpExports, ok := httpBody["exports"].([]any)
+	if !ok || len(httpExports) != 1 {
+		t.Fatalf("http exports mismatch: got %T len=%d", httpBody["exports"], len(httpExports))
+	}
+	httpExport, ok := httpExports[0].(map[string]any)
+	if !ok {
+		t.Fatalf("http export item type: got %T", httpExports[0])
+	}
+	if httpExport["scheme"] != "http" {
+		t.Fatalf("http export scheme: got %v, want http", httpExport["scheme"])
+	}
+	if httpExport["uri"] != "http://user-http:pass-http@1.2.3.4:8080" {
+		t.Fatalf("http export uri: got %v", httpExport["uri"])
+	}
+
+	httpsRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+httpsHash+"/export", nil, true)
+	if httpsRec.Code != http.StatusOK {
+		t.Fatalf("https export status: got %d, want %d, body=%s", httpsRec.Code, http.StatusOK, httpsRec.Body.String())
+	}
+	httpsBody := decodeJSONMap(t, httpsRec)
+	httpsExports, ok := httpsBody["exports"].([]any)
+	if !ok || len(httpsExports) != 1 {
+		t.Fatalf("https exports mismatch: got %T len=%d", httpsBody["exports"], len(httpsExports))
+	}
+	httpsExport, ok := httpsExports[0].(map[string]any)
+	if !ok {
+		t.Fatalf("https export item type: got %T", httpsExports[0])
+	}
+	if httpsExport["scheme"] != "https" {
+		t.Fatalf("https export scheme: got %v, want https", httpsExport["scheme"])
+	}
+	if httpsExport["uri"] != "https://user-https:pass-https@example.com:8443?allowInsecure=1&peer=tls.example.com&servername=tls.example.com&sni=tls.example.com" {
+		t.Fatalf("https export uri: got %v", httpsExport["uri"])
+	}
+}
+
+func TestHandleExportNode_ReturnsSOCKS5ProxyURIAndRejectsUnsupportedProtocol(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	const rawSocks = `{"type":"socks","server":"5.6.7.8","server_port":1081,"username":"user-s5","password":"pass-s5"}`
+	const rawVmess = `{"type":"vmess","server":"9.9.9.9","server_port":443}`
+
+	addNodeForNodeListTest(t, cp, sub, rawSocks, "")
+	addNodeForNodeListTest(t, cp, sub, rawVmess, "")
+
+	socksHash := node.HashFromRawOptions([]byte(rawSocks)).Hex()
+	vmessHash := node.HashFromRawOptions([]byte(rawVmess)).Hex()
+
+	socksRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+socksHash+"/export", nil, true)
+	if socksRec.Code != http.StatusOK {
+		t.Fatalf("socks export status: got %d, want %d, body=%s", socksRec.Code, http.StatusOK, socksRec.Body.String())
+	}
+	socksBody := decodeJSONMap(t, socksRec)
+	socksExports, ok := socksBody["exports"].([]any)
+	if !ok || len(socksExports) != 1 {
+		t.Fatalf("socks exports mismatch: got %T len=%d", socksBody["exports"], len(socksExports))
+	}
+	socksExport, ok := socksExports[0].(map[string]any)
+	if !ok {
+		t.Fatalf("socks export item type: got %T", socksExports[0])
+	}
+	if socksExport["scheme"] != "socks5" {
+		t.Fatalf("socks export scheme: got %v, want socks5", socksExport["scheme"])
+	}
+	if socksExport["uri"] != "socks5://user-s5:pass-s5@5.6.7.8:1081" {
+		t.Fatalf("socks export uri: got %v", socksExport["uri"])
+	}
+
+	vmessRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+vmessHash+"/export", nil, true)
+	if vmessRec.Code != http.StatusConflict {
+		t.Fatalf("vmess export status: got %d, want %d, body=%s", vmessRec.Code, http.StatusConflict, vmessRec.Body.String())
+	}
+}

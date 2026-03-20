@@ -1,6 +1,10 @@
 package service
 
 import (
+	"encoding/json"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +17,32 @@ type NodeReprofileBatchResult struct {
 	Requested int      `json:"requested"`
 	Accepted  int      `json:"accepted"`
 	Failed    []string `json:"failed"`
+}
+
+type NodeExportItem struct {
+	Label  string `json:"label"`
+	Scheme string `json:"scheme"`
+	URI    string `json:"uri"`
+}
+
+type NodeExportResponse struct {
+	NodeHash string           `json:"node_hash"`
+	Exports  []NodeExportItem `json:"exports"`
+}
+
+type nodeTLSExportOptions struct {
+	Enabled    bool   `json:"enabled"`
+	ServerName string `json:"server_name"`
+	Insecure   bool   `json:"insecure"`
+}
+
+type nodeProxyExportOptions struct {
+	Type       string                `json:"type"`
+	Server     string                `json:"server"`
+	ServerPort int                   `json:"server_port"`
+	Username   string                `json:"username"`
+	Password   string                `json:"password"`
+	TLS        *nodeTLSExportOptions `json:"tls"`
 }
 
 // ------------------------------------------------------------------
@@ -234,6 +264,65 @@ func (s *ControlPlaneService) GetNode(hashStr string) (*NodeSummary, error) {
 	return &ns, nil
 }
 
+// ExportNode returns proxy URI exports for raw HTTP/HTTPS/SOCKS nodes.
+func (s *ControlPlaneService) ExportNode(hashStr string) (*NodeExportResponse, error) {
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return nil, invalidArg("node_hash: invalid format")
+	}
+	entry, ok := s.Pool.GetEntry(h)
+	if !ok {
+		return nil, notFound("node not found")
+	}
+
+	var raw nodeProxyExportOptions
+	if err := json.Unmarshal(entry.RawOptions, &raw); err != nil {
+		return nil, internal("decode node raw options", err)
+	}
+	if strings.TrimSpace(raw.Server) == "" || raw.ServerPort <= 0 {
+		return nil, conflict("node raw options missing server or port")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(raw.Type)) {
+	case "http":
+		item := NodeExportItem{
+			Label:  "HTTP",
+			Scheme: "http",
+		}
+		query := url.Values{}
+		if raw.TLS != nil && raw.TLS.Enabled {
+			item.Label = "HTTPS"
+			item.Scheme = "https"
+			serverName := strings.TrimSpace(raw.TLS.ServerName)
+			if serverName != "" {
+				query.Set("sni", serverName)
+				query.Set("servername", serverName)
+				query.Set("peer", serverName)
+			}
+			if raw.TLS.Insecure {
+				query.Set("allowInsecure", "1")
+			}
+		}
+		item.URI = buildProxyExportURI(item.Scheme, raw.Server, raw.ServerPort, raw.Username, raw.Password, query)
+		return &NodeExportResponse{
+			NodeHash: h.Hex(),
+			Exports:  []NodeExportItem{item},
+		}, nil
+	case "socks":
+		item := NodeExportItem{
+			Label:  "SOCKS5",
+			Scheme: "socks5",
+			URI:    buildProxyExportURI("socks5", raw.Server, raw.ServerPort, raw.Username, raw.Password, nil),
+		}
+		return &NodeExportResponse{
+			NodeHash: h.Hex(),
+			Exports:  []NodeExportItem{item},
+		}, nil
+	default:
+		return nil, conflict("node protocol does not support generic HTTP/SOCKS export")
+	}
+}
+
 // ProbeEgress triggers a synchronous egress probe and returns results.
 func (s *ControlPlaneService) ProbeEgress(hashStr string) (*probe.EgressProbeResult, error) {
 	h, err := node.ParseHex(hashStr)
@@ -253,6 +342,32 @@ func (s *ControlPlaneService) ProbeEgress(hashStr string) (*probe.EgressProbeRes
 		result.Region = entry.GetRegion(s.GeoIP.Lookup)
 	}
 	return result, nil
+}
+
+func buildProxyExportURI(
+	scheme string,
+	host string,
+	port int,
+	username string,
+	password string,
+	query url.Values,
+) string {
+	uri := &url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+	}
+	switch {
+	case username != "" && password != "":
+		uri.User = url.UserPassword(username, password)
+	case username != "":
+		uri.User = url.User(username)
+	case password != "":
+		uri.User = url.UserPassword("", password)
+	}
+	if len(query) > 0 {
+		uri.RawQuery = query.Encode()
+	}
+	return uri.String()
 }
 
 // ProbeLatency triggers a synchronous latency probe and returns results.
