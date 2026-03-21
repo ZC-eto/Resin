@@ -77,6 +77,7 @@ export type ProbeRuntimeStatus = {
   due_egress_nodes: number;
   due_latency_nodes: number;
   unknown_egress_nodes: number;
+  unknown_circuit_open_nodes: number;
   known_egress_nodes: number;
   last_egress_scan_at_ns: number;
   last_latency_scan_at_ns: number;

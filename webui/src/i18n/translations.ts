@@ -80,6 +80,8 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "待画像已知出口": "Known egress pending profile",
   "扫描循环会常驻运行，但只有到达探测间隔的节点才会入队；未知出口节点按重试上限逐步重试。":
     "The scan loop runs continuously, but only nodes that reach their probe interval are queued. Unknown egress nodes retry gradually under the retry cap.",
+  "点击立即补齐后，执行中显示的是当前并发执行数，不等于本次提交总数；未知出口节点一次重试后会进入下一轮重试窗口。":
+    "After manual repair starts, Running now shows current concurrent probes instead of the full submitted total; unknown egress nodes enter the next retry window after each attempt.",
   "当前仍有大量未知出口节点停留在出口探测阶段；画像任务只会处理已拿到出口 IP 的节点。":
     "Many nodes are still stuck in egress probing; profiling only handles nodes that already have a known egress IP.",
   "最近扫描": "Last scan",

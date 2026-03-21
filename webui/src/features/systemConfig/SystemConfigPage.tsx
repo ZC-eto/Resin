@@ -855,6 +855,12 @@ export function SystemConfigPage() {
                       <div>
                         <span>{t("未知出口")}</span>
                         <p>{taskStatus?.probe.unknown_egress_nodes ?? 0}</p>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", minHeight: "24px" }}>
+                          <span className="muted">-</span>
+                          <Badge variant="warning">
+                            {t("熔断")} {taskStatus?.probe.unknown_circuit_open_nodes ?? 0}
+                          </Badge>
+                        </div>
                       </div>
                       <div>
                         <span>{t("已知出口")}</span>
@@ -864,6 +870,9 @@ export function SystemConfigPage() {
                     <p className="muted">{t("最近扫描：{{time}}", { time: formatDateTime(taskStatus?.probe.last_egress_scan_at_ns ? new Date(taskStatus.probe.last_egress_scan_at_ns / 1_000_000).toISOString() : "") })}</p>
                     <p className="muted" style={{ marginTop: "8px" }}>
                       {t("扫描循环会常驻运行，但只有到达探测间隔的节点才会入队；未知出口节点按重试上限逐步重试。")}
+                    </p>
+                    <p className="muted" style={{ marginTop: "8px" }}>
+                      {t("点击立即补齐后，执行中显示的是当前并发执行数，不等于本次提交总数；未知出口节点一次重试后会进入下一轮重试窗口。")}
                     </p>
                   </div>
 

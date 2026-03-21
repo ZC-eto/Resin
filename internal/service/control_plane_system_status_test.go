@@ -13,7 +13,7 @@ import (
 	"github.com/Resinat/Resin/internal/topology"
 )
 
-func TestGetSystemTaskStatus_IncludesKnownEgressAndStaleCleanup(t *testing.T) {
+func TestGetSystemTaskStatus_IncludesKnownEgressCircuitOpenAndStaleCleanup(t *testing.T) {
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{
 		MaxLatencyTableEntries: 16,
 		MaxConsecutiveFailures: func() int { return 3 },
@@ -34,6 +34,7 @@ func TestGetSystemTaskStatus_IncludesKnownEgressAndStaleCleanup(t *testing.T) {
 	storeProbeTestOutbound(knownEntry)
 	storeProbeTestOutbound(unknownEntry)
 	knownEntry.SetEgressIP(netip.MustParseAddr("203.0.113.10"))
+	unknownEntry.CircuitOpenSince.Store(time.Now().Add(-time.Minute).UnixNano())
 	unknownEntry.StaleCleanupWindowStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
 
 	runtimeCfg := &atomic.Pointer[config.RuntimeConfig]{}
@@ -60,6 +61,9 @@ func TestGetSystemTaskStatus_IncludesKnownEgressAndStaleCleanup(t *testing.T) {
 	}
 	if status.Probe.UnknownEgressNodes != 1 {
 		t.Fatalf("unknown_egress_nodes=%d, want 1", status.Probe.UnknownEgressNodes)
+	}
+	if status.Probe.UnknownCircuitOpen != 1 {
+		t.Fatalf("unknown_circuit_open_nodes=%d, want 1", status.Probe.UnknownCircuitOpen)
 	}
 	if !status.StaleCleanup.Enabled {
 		t.Fatal("stale cleanup should report enabled")

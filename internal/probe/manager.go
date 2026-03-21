@@ -85,6 +85,7 @@ type RuntimeStatus struct {
 	DueEgressNodes      int   `json:"due_egress_nodes"`
 	DueLatencyNodes     int   `json:"due_latency_nodes"`
 	UnknownEgressNodes  int   `json:"unknown_egress_nodes"`
+	UnknownCircuitOpen  int   `json:"unknown_circuit_open_nodes"`
 	KnownEgressNodes    int   `json:"known_egress_nodes"`
 	LastEgressScanAtNs  int64 `json:"last_egress_scan_at_ns"`
 	LastLatencyScanAtNs int64 `json:"last_latency_scan_at_ns"`
@@ -592,6 +593,9 @@ func (m *ProbeManager) Status() RuntimeStatus {
 		}
 		if !entry.GetEgressIP().IsValid() {
 			status.UnknownEgressNodes++
+			if entry.IsCircuitOpen() {
+				status.UnknownCircuitOpen++
+			}
 		} else {
 			status.KnownEgressNodes++
 		}
