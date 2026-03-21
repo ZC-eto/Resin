@@ -419,8 +419,9 @@ export function SubscriptionPage() {
     },
     onSuccess: async ({ subscription, result }) => {
       await invalidateSubscriptionsAndNodes();
-      showToast("success", t("订阅 {{name}} 已加入补齐任务：出口 {{egress}} / 画像 {{profile}}", {
+      showToast("success", t("订阅 {{name}} 已加入补齐任务：直补出口 {{seeded}} / 排队探测 {{egress}} / 画像 {{profile}}", {
         name: subscription.name,
+        seeded: result.seeded_egress,
         egress: result.queued_egress,
         profile: result.queued_profile,
       }));

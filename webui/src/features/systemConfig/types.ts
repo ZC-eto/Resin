@@ -108,3 +108,12 @@ export type SystemTaskStatus = {
     last_run_at_ns: number;
   };
 };
+
+export type UnknownNodesFillResult = {
+  matched: number;
+  seeded_egress: number;
+  queued_egress: number;
+  queued_profile: number;
+  skipped: number;
+  failed: number;
+};

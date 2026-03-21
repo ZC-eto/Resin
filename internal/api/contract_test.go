@@ -17,6 +17,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipprofile"
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
@@ -412,6 +413,60 @@ func TestAPIContract_RequestBodyTooLarge(t *testing.T) {
 		t.Fatalf("status: got %d, want %d, body=%s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
 	assertErrorCode(t, rec, "PAYLOAD_TOO_LARGE")
+}
+
+func TestAPIContract_FillSystemUnknownNodes(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("sub-fill-system", "sub-fill-system", "https://example.com/sub", true, false)
+	cp.SubMgr.Register(sub)
+
+	raw := []byte(`{"type":"socks","server":"198.51.100.66","server_port":1080}`)
+	hash := node.HashFromRawOptions(raw)
+	cp.Pool.AddNodeFromSub(hash, raw, sub.ID)
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"tag"}})
+
+	entry, ok := cp.Pool.GetEntry(hash)
+	if !ok {
+		t.Fatalf("node %s missing after add", hash.Hex())
+	}
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	cp.Pool.RecordResult(hash, true)
+
+	cp.ProfileSvc = ipprofile.NewService(ipprofile.Config{
+		Pool:                cp.Pool,
+		BackgroundBatchSize: 4,
+		RuntimeSettings: func() ipprofile.RuntimeSettings {
+			return ipprofile.RuntimeSettings{
+				OnlineProvider:          config.IPProfileOnlineProviderProxycheck,
+				OnlineAPIKey:            "test-key",
+				OnlineRequestsPerMinute: 60,
+				CacheTTL:                time.Hour,
+				BackgroundEnabled:       true,
+				RefreshOnEgressChange:   true,
+			}
+		},
+	})
+
+	rec := doJSONRequest(t, srv, http.MethodPost, "/api/v1/system/actions/fill-unknown-nodes", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fill system unknown nodes status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body := decodeJSONMap(t, rec)
+	if body["matched"] != float64(1) {
+		t.Fatalf("matched: got %v, want 1", body["matched"])
+	}
+	if body["seeded_egress"] != float64(1) {
+		t.Fatalf("seeded_egress: got %v, want 1", body["seeded_egress"])
+	}
+	if body["queued_egress"] != float64(0) {
+		t.Fatalf("queued_egress: got %v, want 0", body["queued_egress"])
+	}
+	if body["queued_profile"] != float64(1) {
+		t.Fatalf("queued_profile: got %v, want 1", body["queued_profile"])
+	}
 }
 
 func TestAPIContract_GetLease_AccountPathEncoding(t *testing.T) {

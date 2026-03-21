@@ -36,6 +36,7 @@ export type Subscription = {
 
 export type SubscriptionFillUnknownNodesResult = {
   matched: number;
+  seeded_egress: number;
   queued_egress: number;
   queued_profile: number;
   skipped: number;

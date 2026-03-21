@@ -66,13 +66,16 @@ type SubscriptionSourceInput struct {
 	Enabled *bool  `json:"enabled"`
 }
 
-type SubscriptionFillUnknownNodesResult struct {
+type UnknownNodesFillResult struct {
 	Matched       int `json:"matched"`
+	SeededEgress  int `json:"seeded_egress"`
 	QueuedEgress  int `json:"queued_egress"`
 	QueuedProfile int `json:"queued_profile"`
 	Skipped       int `json:"skipped"`
 	Failed        int `json:"failed"`
 }
+
+type SubscriptionFillUnknownNodesResult = UnknownNodesFillResult
 
 type subscriptionUnknownNodeCounts struct {
 	pendingEgress   int
@@ -193,6 +196,74 @@ func shouldAutoQueueUnknownProfile(entry *node.NodeEntry) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func (s *ControlPlaneService) queueUnknownNodeRepair(
+	result *UnknownNodesFillResult,
+	h node.Hash,
+	entry *node.NodeEntry,
+	manual bool,
+	endpointCache map[string]endpointSeedResolution,
+	egressQueue *[]node.Hash,
+	profileQueue *[]node.Hash,
+) {
+	if result == nil || entry == nil {
+		return
+	}
+
+	switch s.resolveNodeProfileState(h, entry) {
+	case "UNPROBED", "PENDING_EGRESS", "PROBING_EGRESS":
+		result.Matched++
+		if s.trySeedUnknownNodeEgressFromEndpoint(h, entry, endpointCache) {
+			result.SeededEgress++
+			*profileQueue = append(*profileQueue, h)
+			return
+		}
+		*egressQueue = append(*egressQueue, h)
+	case "PENDING_PROFILE", "QUEUED_PROFILE", "PROFILING":
+		result.Matched++
+		*profileQueue = append(*profileQueue, h)
+	case "PROFILED_UNKNOWN":
+		result.Matched++
+		if manual || shouldAutoQueueUnknownProfile(entry) {
+			*profileQueue = append(*profileQueue, h)
+			return
+		}
+		result.Skipped++
+	}
+}
+
+func (s *ControlPlaneService) flushUnknownNodeRepairQueues(
+	result *UnknownNodesFillResult,
+	manual bool,
+	egressQueue []node.Hash,
+	profileQueue []node.Hash,
+) {
+	if result == nil {
+		return
+	}
+
+	for _, h := range egressQueue {
+		if s == nil || s.ProbeMgr == nil {
+			result.Failed++
+			continue
+		}
+		s.ProbeMgr.TriggerImmediateEgressProbe(h)
+		result.QueuedEgress++
+	}
+
+	for _, h := range profileQueue {
+		if s == nil || s.ProfileSvc == nil {
+			result.Failed++
+			continue
+		}
+		if manual {
+			s.ProfileSvc.EnqueueForce(h)
+		} else {
+			s.ProfileSvc.Enqueue(h)
+		}
+		result.QueuedProfile++
 	}
 }
 
@@ -778,6 +849,7 @@ func (s *ControlPlaneService) fillSubscriptionUnknownNodes(
 	result := &SubscriptionFillUnknownNodesResult{}
 	egressQueue := make([]node.Hash, 0, 32)
 	profileQueue := make([]node.Hash, 0, 32)
+	endpointCache := make(map[string]endpointSeedResolution)
 	var fillErr error
 
 	sub.WithOpLock(func() {
@@ -810,50 +882,14 @@ func (s *ControlPlaneService) fillSubscriptionUnknownNodes(
 				result.Skipped++
 				return true
 			}
-
-			switch s.resolveNodeProfileState(h, entry) {
-			case "UNPROBED", "PENDING_EGRESS", "PROBING_EGRESS":
-				result.Matched++
-				egressQueue = append(egressQueue, h)
-			case "PENDING_PROFILE", "QUEUED_PROFILE", "PROFILING":
-				result.Matched++
-				profileQueue = append(profileQueue, h)
-			case "PROFILED_UNKNOWN":
-				result.Matched++
-				if manual || shouldAutoQueueUnknownProfile(entry) {
-					profileQueue = append(profileQueue, h)
-				} else {
-					result.Skipped++
-				}
-			}
+			s.queueUnknownNodeRepair(result, h, entry, manual, endpointCache, &egressQueue, &profileQueue)
 			return true
 		})
 	})
 	if fillErr != nil {
 		return nil, fillErr
 	}
-
-	for _, h := range egressQueue {
-		if s.ProbeMgr == nil {
-			result.Failed++
-			continue
-		}
-		s.ProbeMgr.TriggerImmediateEgressProbe(h)
-		result.QueuedEgress++
-	}
-
-	for _, h := range profileQueue {
-		if s.ProfileSvc == nil {
-			result.Failed++
-			continue
-		}
-		if manual {
-			s.ProfileSvc.EnqueueForce(h)
-		} else {
-			s.ProfileSvc.Enqueue(h)
-		}
-		result.QueuedProfile++
-	}
+	s.flushUnknownNodeRepairQueues(result, manual, egressQueue, profileQueue)
 
 	return result, nil
 }

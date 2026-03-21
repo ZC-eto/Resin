@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -40,9 +42,128 @@ type nodeProxyExportOptions struct {
 	Type       string                `json:"type"`
 	Server     string                `json:"server"`
 	ServerPort int                   `json:"server_port"`
+	Port       int                   `json:"port"`
 	Username   string                `json:"username"`
 	Password   string                `json:"password"`
 	TLS        *nodeTLSExportOptions `json:"tls"`
+}
+
+type endpointSeedResolution struct {
+	ip netip.Addr
+	ok bool
+}
+
+var lookupNodeEndpointIPs = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+func (o nodeProxyExportOptions) normalizedType() string {
+	return strings.ToLower(strings.TrimSpace(o.Type))
+}
+
+func (o nodeProxyExportOptions) effectivePort() int {
+	if o.ServerPort > 0 {
+		return o.ServerPort
+	}
+	return o.Port
+}
+
+func (o nodeProxyExportOptions) canSeedEgressFromEndpoint() bool {
+	switch o.normalizedType() {
+	case "http", "socks":
+		return strings.TrimSpace(o.Server) != "" && o.effectivePort() > 0
+	default:
+		return false
+	}
+}
+
+func decodeNodeProxyExportOptions(raw json.RawMessage) (nodeProxyExportOptions, error) {
+	var options nodeProxyExportOptions
+	if err := json.Unmarshal(raw, &options); err != nil {
+		return nodeProxyExportOptions{}, err
+	}
+	return options, nil
+}
+
+func isDirectProfileCandidateIP(addr netip.Addr) bool {
+	if !addr.IsValid() || !addr.IsGlobalUnicast() {
+		return false
+	}
+	if addr.IsPrivate() || addr.IsLoopback() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsUnspecified() {
+		return false
+	}
+	return true
+}
+
+func resolveNodeEndpointSeedIP(
+	raw nodeProxyExportOptions,
+	cache map[string]endpointSeedResolution,
+) (netip.Addr, bool) {
+	host := strings.TrimSpace(raw.Server)
+	if host == "" {
+		return netip.Addr{}, false
+	}
+
+	cacheKey := strings.ToLower(host)
+	if cache != nil {
+		if cached, ok := cache[cacheKey]; ok {
+			return cached.ip, cached.ok
+		}
+	}
+
+	resolve := func() (netip.Addr, bool) {
+		if ip, err := netip.ParseAddr(host); err == nil {
+			if isDirectProfileCandidateIP(ip) {
+				return ip, true
+			}
+			return netip.Addr{}, false
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		addrs, err := lookupNodeEndpointIPs(ctx, host)
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		for _, addr := range addrs {
+			if isDirectProfileCandidateIP(addr) {
+				return addr, true
+			}
+		}
+		return netip.Addr{}, false
+	}
+
+	ip, ok := resolve()
+	if cache != nil {
+		cache[cacheKey] = endpointSeedResolution{ip: ip, ok: ok}
+	}
+	return ip, ok
+}
+
+func (s *ControlPlaneService) trySeedUnknownNodeEgressFromEndpoint(
+	h node.Hash,
+	entry *node.NodeEntry,
+	cache map[string]endpointSeedResolution,
+) bool {
+	if s == nil || s.Pool == nil || entry == nil {
+		return false
+	}
+	if !entry.HasOutbound() || entry.IsCircuitOpen() || entry.GetEgressIP().IsValid() {
+		return false
+	}
+
+	raw, err := decodeNodeProxyExportOptions(entry.RawOptions)
+	if err != nil || !raw.canSeedEgressFromEndpoint() {
+		return false
+	}
+
+	ip, ok := resolveNodeEndpointSeedIP(raw, cache)
+	if !ok {
+		return false
+	}
+	s.Pool.UpdateNodeEgressIP(h, &ip, nil)
+	return true
 }
 
 // ------------------------------------------------------------------
@@ -275,15 +396,16 @@ func (s *ControlPlaneService) ExportNode(hashStr string) (*NodeExportResponse, e
 		return nil, notFound("node not found")
 	}
 
-	var raw nodeProxyExportOptions
-	if err := json.Unmarshal(entry.RawOptions, &raw); err != nil {
+	raw, err := decodeNodeProxyExportOptions(entry.RawOptions)
+	if err != nil {
 		return nil, internal("decode node raw options", err)
 	}
-	if strings.TrimSpace(raw.Server) == "" || raw.ServerPort <= 0 {
+	port := raw.effectivePort()
+	if strings.TrimSpace(raw.Server) == "" || port <= 0 {
 		return nil, conflict("node raw options missing server or port")
 	}
 
-	switch strings.ToLower(strings.TrimSpace(raw.Type)) {
+	switch raw.normalizedType() {
 	case "http":
 		item := NodeExportItem{
 			Label:  "HTTP",
@@ -303,7 +425,7 @@ func (s *ControlPlaneService) ExportNode(hashStr string) (*NodeExportResponse, e
 				query.Set("allowInsecure", "1")
 			}
 		}
-		item.URI = buildProxyExportURI(item.Scheme, raw.Server, raw.ServerPort, raw.Username, raw.Password, query)
+		item.URI = buildProxyExportURI(item.Scheme, raw.Server, port, raw.Username, raw.Password, query)
 		return &NodeExportResponse{
 			NodeHash: h.Hex(),
 			Exports:  []NodeExportItem{item},
@@ -312,7 +434,7 @@ func (s *ControlPlaneService) ExportNode(hashStr string) (*NodeExportResponse, e
 		item := NodeExportItem{
 			Label:  "SOCKS5",
 			Scheme: "socks5",
-			URI:    buildProxyExportURI("socks5", raw.Server, raw.ServerPort, raw.Username, raw.Password, nil),
+			URI:    buildProxyExportURI("socks5", raw.Server, port, raw.Username, raw.Password, nil),
 		}
 		return &NodeExportResponse{
 			NodeHash: h.Hex(),
@@ -443,4 +565,29 @@ func (s *ControlPlaneService) QueueReprofileKnownNodes() (*NodeReprofileBatchRes
 		Accepted:  accepted,
 		Failed:    []string{},
 	}, nil
+}
+
+// FillSystemUnknownNodes manually pushes all repairable unknown nodes into the
+// egress/profile repair pipeline. HTTP/SOCKS nodes with a resolvable raw server
+// address are seeded directly to a known egress IP before profiling.
+func (s *ControlPlaneService) FillSystemUnknownNodes() (*UnknownNodesFillResult, error) {
+	if s == nil || s.Pool == nil {
+		return nil, internal("system unknown-node repair unavailable", nil)
+	}
+
+	result := &UnknownNodesFillResult{}
+	egressQueue := make([]node.Hash, 0, 128)
+	profileQueue := make([]node.Hash, 0, 128)
+	endpointCache := make(map[string]endpointSeedResolution)
+
+	s.Pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
+		if entry == nil || !entry.HasOutbound() {
+			return true
+		}
+		s.queueUnknownNodeRepair(result, h, entry, true, endpointCache, &egressQueue, &profileQueue)
+		return true
+	})
+
+	s.flushUnknownNodeRepairQueues(result, true, egressQueue, profileQueue)
+	return result, nil
 }

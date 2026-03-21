@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/netip"
 	"sync/atomic"
 	"testing"
@@ -360,5 +361,152 @@ func TestFillSubscriptionUnknownNodes_TracksQueuedProfileStateWithRuntimeConfig(
 	}
 	if state := profileSvc.TaskState(hash); state != ipprofile.NodeTaskStateQueued {
 		t.Fatalf("queued task state = %s, want %s", state, ipprofile.NodeTaskStateQueued)
+	}
+}
+
+func TestFillSubscriptionUnknownNodes_SeedsHTTPAndSOCKSEndpoints(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	socksHash, socksEntry := addSubscriptionManagedNode(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"socks","server":"198.51.100.77","server_port":1080}`),
+		"socks-fast-seed",
+	)
+	socksOutbound := testutil.NewNoopOutbound()
+	socksEntry.Outbound.Store(&socksOutbound)
+	pool.RecordResult(socksHash, true)
+
+	httpHash, httpEntry := addSubscriptionManagedNode(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"http","server":"proxy.seed.test","server_port":8080}`),
+		"http-fast-seed",
+	)
+	httpOutbound := testutil.NewNoopOutbound()
+	httpEntry.Outbound.Store(&httpOutbound)
+	pool.RecordResult(httpHash, true)
+
+	oldLookup := lookupNodeEndpointIPs
+	lookupNodeEndpointIPs = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host != "proxy.seed.test" {
+			t.Fatalf("unexpected lookup host %q", host)
+		}
+		return []netip.Addr{netip.MustParseAddr("203.0.113.88")}, nil
+	}
+	t.Cleanup(func() {
+		lookupNodeEndpointIPs = oldLookup
+	})
+
+	profileSvc := newUnknownFillProfileService(pool)
+	cp := &ControlPlaneService{
+		Pool:       pool,
+		SubMgr:     subMgr,
+		ProfileSvc: profileSvc,
+	}
+
+	result, err := cp.FillSubscriptionUnknownNodes(sub.ID)
+	if err != nil {
+		t.Fatalf("FillSubscriptionUnknownNodes: %v", err)
+	}
+	if result.Matched != 2 {
+		t.Fatalf("matched = %d, want 2", result.Matched)
+	}
+	if result.SeededEgress != 2 {
+		t.Fatalf("seeded_egress = %d, want 2", result.SeededEgress)
+	}
+	if result.QueuedEgress != 0 {
+		t.Fatalf("queued_egress = %d, want 0", result.QueuedEgress)
+	}
+	if result.QueuedProfile != 2 {
+		t.Fatalf("queued_profile = %d, want 2", result.QueuedProfile)
+	}
+	if got := socksEntry.GetEgressIP().String(); got != "198.51.100.77" {
+		t.Fatalf("socks egress ip = %q, want %q", got, "198.51.100.77")
+	}
+	if got := httpEntry.GetEgressIP().String(); got != "203.0.113.88" {
+		t.Fatalf("http egress ip = %q, want %q", got, "203.0.113.88")
+	}
+	if state := profileSvc.TaskState(socksHash); state != ipprofile.NodeTaskStateQueued {
+		t.Fatalf("socks profile task state = %s, want %s", state, ipprofile.NodeTaskStateQueued)
+	}
+	if state := profileSvc.TaskState(httpHash); state != ipprofile.NodeTaskStateQueued {
+		t.Fatalf("http profile task state = %s, want %s", state, ipprofile.NodeTaskStateQueued)
+	}
+}
+
+func TestFillSystemUnknownNodes_SeedsHTTPAndSOCKSAndQueuesOtherNodes(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	socksHash, socksEntry := addSubscriptionManagedNode(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"socks","server":"198.51.100.99","server_port":1080}`),
+		"socks-system-seed",
+	)
+	socksOutbound := testutil.NewNoopOutbound()
+	socksEntry.Outbound.Store(&socksOutbound)
+	pool.RecordResult(socksHash, true)
+
+	ssHash, ssEntry := addSubscriptionManagedNode(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"shadowsocks","server":"10.0.0.9","server_port":443}`),
+		"ss-system-probe",
+	)
+	ssOutbound := testutil.NewNoopOutbound()
+	ssEntry.Outbound.Store(&ssOutbound)
+	pool.RecordResult(ssHash, true)
+
+	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
+		Pool:        pool,
+		Concurrency: 1,
+	})
+	t.Cleanup(probeMgr.Stop)
+
+	profileSvc := newUnknownFillProfileService(pool)
+	cp := &ControlPlaneService{
+		Pool:       pool,
+		SubMgr:     subMgr,
+		ProbeMgr:   probeMgr,
+		ProfileSvc: profileSvc,
+	}
+
+	result, err := cp.FillSystemUnknownNodes()
+	if err != nil {
+		t.Fatalf("FillSystemUnknownNodes: %v", err)
+	}
+	if result.Matched != 2 {
+		t.Fatalf("matched = %d, want 2", result.Matched)
+	}
+	if result.SeededEgress != 1 {
+		t.Fatalf("seeded_egress = %d, want 1", result.SeededEgress)
+	}
+	if result.QueuedEgress != 1 {
+		t.Fatalf("queued_egress = %d, want 1", result.QueuedEgress)
+	}
+	if result.QueuedProfile != 1 {
+		t.Fatalf("queued_profile = %d, want 1", result.QueuedProfile)
+	}
+	if got := socksEntry.GetEgressIP().String(); got != "198.51.100.99" {
+		t.Fatalf("socks egress ip = %q, want %q", got, "198.51.100.99")
+	}
+	if state := profileSvc.TaskState(socksHash); state != ipprofile.NodeTaskStateQueued {
+		t.Fatalf("socks profile task state = %s, want %s", state, ipprofile.NodeTaskStateQueued)
+	}
+	if got := ssEntry.GetEgressIP().IsValid(); got {
+		t.Fatal("shadowsocks node should still rely on queued egress probe")
 	}
 }

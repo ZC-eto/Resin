@@ -13,7 +13,15 @@ import { useToast } from "../../hooks/useToast";
 import i18next, { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime } from "../../lib/time";
-import { getEnvConfig, getDefaultSystemConfig, getSystemConfig, getSystemTaskStatus, patchSystemConfig, reprofileKnownNodes } from "./api";
+import {
+  fillSystemUnknownNodes,
+  getEnvConfig,
+  getDefaultSystemConfig,
+  getSystemConfig,
+  getSystemTaskStatus,
+  patchSystemConfig,
+  reprofileKnownNodes,
+} from "./api";
 import type { RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 type RuntimeConfigForm = {
@@ -407,11 +415,48 @@ export function SystemConfigPage() {
 
   const queueKnownNodesMutation = useMutation({
     mutationFn: reprofileKnownNodes,
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["system-task-status"] });
       showToast(
         "success",
         t("已提交画像重检任务：{{count}} 个已知出口 IP 节点", { count: result.accepted }),
       );
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const fillUnknownNodesMutation = useMutation({
+    mutationFn: fillSystemUnknownNodes,
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["system-task-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["subscriptions"] }),
+        queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+      ]);
+      if (result.matched === 0) {
+        showToast("success", t("当前没有可立即补齐的未知节点"));
+        return;
+      }
+      showToast(
+        "success",
+        t("已提交未知节点补齐：直补出口 {{seeded}} / 排队探测 {{egress}} / 画像 {{profile}}", {
+          seeded: result.seeded_egress,
+          egress: result.queued_egress,
+          profile: result.queued_profile,
+        }),
+      );
+      if (result.skipped > 0 || result.failed > 0) {
+        showToast(
+          "success",
+          t("补齐结果：匹配 {{matched}}，跳过 {{skipped}}，失败 {{failed}}", {
+            matched: result.matched,
+            skipped: result.skipped,
+            failed: result.failed,
+          }),
+        );
+      }
     },
     onError: (error) => {
       showToast("error", formatApiErrorMessage(error, t));
@@ -1002,10 +1047,19 @@ export function SystemConfigPage() {
 
                 <div className="callout callout-warn" style={{ marginTop: "16px" }}>
                   <Sparkles size={14} />
-                  <span>{t("如果你刚改了在线 provider 或 API key，可以点下面按钮，对当前已知出口 IP 批量重新补画像。")}</span>
+                  <span>{t("可以先手动把全部未知节点推进补齐链路；HTTP/SOCKS 节点会优先尝试使用原始 server 地址直接补已知出口。若你刚改了在线 provider 或 API key，再对当前已知出口 IP 批量重检画像。")}</span>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "16px", flexWrap: "wrap" }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void fillUnknownNodesMutation.mutateAsync()}
+                    disabled={fillUnknownNodesMutation.isPending}
+                  >
+                    <RefreshCw size={16} className={fillUnknownNodesMutation.isPending ? "spin" : undefined} />
+                    {fillUnknownNodesMutation.isPending ? t("提交中...") : t("立即补齐全部未知节点")}
+                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"
